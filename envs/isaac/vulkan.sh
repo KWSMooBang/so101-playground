@@ -10,3 +10,11 @@ if [ ! -e /usr/share/vulkan/icd.d/nvidia_icd.json ] && [ ! -e /etc/vulkan/icd.d/
     export VK_ICD_FILENAMES="$_vk_here/nvidia_icd.json"   # name used by older loaders
 fi
 unset _vk_self _vk_here
+
+# Same for the GLVND EGL vendor file (otherwise Kit logs "eglInitialize failed").
+if [ -n "${BASH_SOURCE:-}" ]; then _vk_self="${BASH_SOURCE[0]}"; else _vk_self="${(%):-%x}"; fi
+_vk_here="$(cd "$(dirname "$_vk_self")" && pwd)"
+if [ ! -e /usr/share/glvnd/egl_vendor.d/10_nvidia.json ] && [ ! -e /etc/glvnd/egl_vendor.d/10_nvidia.json ]; then
+    export __EGL_VENDOR_LIBRARY_FILENAMES="$_vk_here/nvidia_egl_vendor.json"
+fi
+unset _vk_self _vk_here

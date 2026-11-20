@@ -48,10 +48,15 @@ python -c "import lerobot, torch; print(lerobot.__version__, torch.cuda.is_avail
 
 ### isaac env
 
-`setup_isaac.sh` installs `isaacsim[all,extscache]==5.1.0` (pip, pypi.nvidia.com), torch 2.7.0+cu128,
-Isaac Lab v2.3.2 (`isaaclab` extension 0.54.2, the version the bench tests; no RL frameworks) and
-`third_party/so101_bench/source/so101_bench`. Installing Isaac Sim accepts the NVIDIA Omniverse EULA
-(`OMNI_KIT_ACCEPT_EULA=YES`).
+`setup_isaac.sh` installs `isaacsim[all,extscache]==5.1.0` (pip, pypi.nvidia.com; brings torch 2.7.0
+and numpy 1.26.0), Isaac Lab v2.3.2 (`isaaclab` extension 0.54.2, the version the bench tests; no RL
+frameworks) and `third_party/so101_bench/source/so101_bench`. Installing Isaac Sim accepts the NVIDIA
+Omniverse EULA (`OMNI_KIT_ACCEPT_EULA=YES`).
+
+The Isaac Lab extensions are installed with `uv pip install -e` under `envs/isaac/constraints.txt`
+and `build-constraints.txt`, not with `isaaclab.sh --install`: that script fails to build
+`flatdict` with current setuptools (and still exits 0, leaving `isaaclab` uninstalled) and upgrades
+numpy to 2.x. `isaaclab.sh -p` still works for running scripts.
 
 ```bash
 source envs/isaac/env.sh
@@ -66,6 +71,17 @@ manifest, so by default Vulkan only sees mesa and Isaac Sim finds no RTX GPU. `e
 (sourced by both `env.sh` files) sets `VK_DRIVER_FILES` to `envs/isaac/nvidia_icd.json`, which points
 the loader at the driver's `libEGL_nvidia.so.0`. It does nothing when the system already has an
 NVIDIA manifest. Check with `vulkaninfo --summary` after sourcing `env.sh`.
+
+The same file sets `__EGL_VENDOR_LIBRARY_FILENAMES` to `envs/isaac/nvidia_egl_vendor.json` for EGL.
+
+**GPU selection.** Use `CUDA_VISIBLE_DEVICES=<gpu>`. `--device cuda:N` with N > 0 hangs
+("GPUs other than cuda:0 are not currently supported") and allocates memory on every GPU.
+
+**System library needed: `libglu1-mesa`.** Isaac Sim's MDL SDK (`libneuray.so`) links `libGLU.so.1`,
+which our container lacks. Without it the headless empty-stage test passes, but any env with cameras
+fails: MDL does not load, the RTX shaders fail to compile and the process aborts with
+`CUDA error: an illegal memory access` in `omni.physx.tensors` during env creation. Needs
+`apt-get install libglu1-mesa` (as of 2026-11-21 not installed; bench env not yet stepped).
 
 ## Roles
 

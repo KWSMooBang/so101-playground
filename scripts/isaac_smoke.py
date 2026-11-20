@@ -86,8 +86,16 @@ def bench_env() -> None:
 
 
 if __name__ == "__main__":
+    import os
+    import threading
+
+    code = 1
     try:
         bench_env() if args.task else empty_stage()
         print(f"[smoke] PASS total {time.time() - t0:.1f}s", flush=True)
+        code = 0
     finally:
+        # Kit sometimes hangs on shutdown in headless containers; do not hold the GPU if it does.
+        threading.Timer(30.0, lambda: os._exit(code)).start()
         simulation_app.close()
+        os._exit(code)
