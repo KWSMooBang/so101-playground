@@ -1,0 +1,6 @@
+[submodule "third_party/so101_bench"]
+	path = third_party/so101_bench
+	url = https://github.com/5hadytru/so101_bench
+[submodule "third_party/lerobot"]
+	path = third_party/lerobot
+	url = https://github.com/huggingface/lerobot
