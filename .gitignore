@@ -1,0 +1,22 @@
+# environments
+.venv/
+envs/*/.venv/
+envs/isaac/IsaacLab/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# assets, data, outputs
+assets/
+data/
+outputs/
+logs/
+wandb/
+trackio/
+*.ckpt
+*.safetensors
+
+# tools
+.claude/
+.vscode/
+.DS_Store
