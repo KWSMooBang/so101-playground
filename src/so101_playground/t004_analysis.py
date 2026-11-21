@@ -20,6 +20,7 @@ Definitions
 from __future__ import annotations
 
 import argparse
+import re
 import json
 from pathlib import Path
 
@@ -137,7 +138,7 @@ def lawam_stats(run: Path, per_query_track: dict) -> dict:
     ide = {(r["episode"], r["frame"]): r for r in rows if r["kind"] == "ideal"}
     out = {"n_obs_scores": len(obs), "n_ideal_scores": len(ide)}
     for name, d in (("obs", obs), ("ideal", ide)):
-        for k in ("e_pred_lat", "cos_pred_lat", "e_static_lat", "e_act_lat", "cos_act_lat"):
+        for k in ("e_pred_lat", "cos_pred_lat", "e_static_lat", "e_act_lat", "cos_act_lat", "e_exec_lat"):
             v = [r[k] for r in d.values() if r.get(k) is not None]
             out[f"{name}_{k}"] = float(np.mean(v)) if v else None
     paired = [k for k in obs if k in ide]
@@ -149,6 +150,10 @@ def lawam_stats(run: Path, per_query_track: dict) -> dict:
         out["paired_diff"] = float(np.mean(list(diff.values())))
         out["paired_diff_ci95"] = _boot_ci(diff)
         out["paired_obs_gt_ideal_frac"] = float(np.mean([v > 0 for v in diff.values()]))
+        out["_q:paired_diff"] = _per_query(diff)
+        exe = {k: r["e_exec_lat"] for k, r in ide.items() if r.get("e_exec_lat") is not None}
+        if exe:
+            out["e_exec_lat_ci95"] = _boot_ci(exe)
     ratio = {k: r["e_pred_lat"] / r["e_static_lat"] for k, r in obs.items() if r["e_static_lat"] > 0}
     out["obs_e_pred_over_static_median"] = float(np.median(list(ratio.values()))) if ratio else None
     out["obs_e_pred_ci95"] = _boot_ci({k: r["e_pred_lat"] for k, r in obs.items()})
@@ -203,6 +208,10 @@ def main() -> None:
     ap.add_argument("--horizon", type=int, default=35)
     ap.add_argument("--conditions", default="none,gain,latency,offset,backlash,gain2,latency6,offset6")
     ap.add_argument("--tsv", type=Path, default=None, help="Append one row per condition (results.tsv).")
+    ap.add_argument("--run_prefix", default="T004", help="run_id prefix: <prefix>-<model>-<condition>.")
+    ap.add_argument("--ideal_invalid", action="store_true",
+                    help="Runs made with the pre-review replay (unclamped chunk targets, gap actuators, no RTX flush): "
+                         "write e_ideal / obs-ideal / e_exec as 'invalid'.")
     args = ap.parse_args()
     summary = {}
     for cond in args.conditions.split(","):
@@ -225,7 +234,7 @@ def main() -> None:
     out.write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
     if args.tsv:
-        write_tsv(args.tsv, args.model, summary)
+        write_tsv(args.tsv, args.model, summary, prefix=args.run_prefix, ideal_invalid=args.ideal_invalid)
 
 
 TSV_COLS = ["run_id", "task", "model", "condition", "n_episodes", "success", "e_track_deg", "e_track@h_deg", "metric",
@@ -234,7 +243,7 @@ TSV_COLS = ["run_id", "task", "model", "condition", "n_episodes", "success", "e_
 FLUX_PRIMARY = "dino_scene@16"  # fixed before the sweep; others go to notes
 
 
-def write_tsv(path: Path, model: str, summary: dict) -> None:
+def write_tsv(path: Path, model: str, summary: dict, prefix: str = "T004", ideal_invalid: bool = False) -> None:
     new = not path.exists() or not path.read_text().strip()
     with path.open("a") as f:
         if new:
@@ -262,7 +271,17 @@ def write_tsv(path: Path, model: str, summary: dict) -> None:
                 for k in ("lpips_scene@16", "lpips_wrist@16", "l1_scene@16", "dino_wrist@16", "dino_scene@8", "dino_scene@31"):
                     extra.append(f"{k}: pred={g('e_pred.' + k)} ideal={g('paired_e_ideal.' + k)} exec={g('e_exec.' + k)}")
                 notes = "FLUX3 bench LoRA raw u3000; " + "; ".join(extra)
-            row = [f"T004-{model}-{cond}", "T004-wam-pred-gap-probe", model, cond, str(s["n_episodes"]),
+            if ideal_invalid:
+                notes = notes.split("; paired_diff=")[0] + ("; " + notes.split("; ")[-1] if "; paired_diff=" in notes else "")
+                notes = re.sub(r" ideal=\S* exec=[^;]*", "", notes)
+                vals[2] = "invalid"  # e_ideal_paired
+                if model != "lawam":
+                    vals[3] = "invalid"  # e_exec
+                notes = ("e_ideal/e_exec INVALID: pre-review replay (unclamped targets, gap actuators, RTX history; "
+                         "review 2026-11-21 #2-4). " + notes)
+            else:
+                notes = "replay v2 (issued cmds, nominal gains, arm teleported per substep, RTX flush). " + notes
+            row = [f"{prefix}-{model}-{cond}", "T004-wam-pred-gap-probe", model, cond, str(s["n_episodes"]),
                    g("success", "{:.3f}"), g("e_track_deg", "{:.3f}"), g("e_track_at_h_deg", "{:.3f}"), metric, *vals,
                    str(s["n_queries"]), notes]
             f.write("\t".join(row) + "\n")

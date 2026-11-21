@@ -175,7 +175,13 @@ class Probe:
             "cos_act_lat": float(1 - F.cosine_similarity(pae.flatten(1), teacher.flatten(1), dim=-1).mean())
             if pae.shape == teacher.shape else None,
         }
-        out.update({k: payload[k] for k in ("condition", "attempt", "dir") if k in payload})
+        out.update({k: payload[k] for k in ("condition", "attempt", "dir", "replay_mode") if k in payload})
+        # d(fault obs, replay obs) in LAM space: the observed frame is scored first (tick s+35), the replay at the
+        # chunk end, so the observed features are kept on the query's entry.
+        if out["kind"] == "observed":
+            mem["h_observed"] = h_obs.detach().clone()
+        elif "h_observed" in mem:
+            out["e_exec_lat"] = float(F.mse_loss(mem["h_observed"], h_obs))
         self.score_log.write(json.dumps(out) + "\n")
         self.score_log.flush()
         if payload.get("return_features"):  # for visualization: (256 tokens x 768) as fp16 base64

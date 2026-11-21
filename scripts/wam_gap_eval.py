@@ -59,6 +59,8 @@ parser.add_argument("--history_ticks", type=int, default=None)
 parser.add_argument("--replay_episodes", type=int, default=0)
 parser.add_argument("--save_frames", action="store_true", help="Store canvases (and LaWAM LAM features) for videos.")
 parser.add_argument("--replay_every", type=int, default=1, help="Replay every k-th query of a replay episode.")
+parser.add_argument("--replay_mode", choices=["teleport", "nominal"], default="teleport",
+                    help="teleport: arm placed on the command (perfect tracking); nominal: fault-free PD arm.")
 parser.add_argument("--replay_ticks", type=int, default=None, help="Ticks per replay branch (default per model).")
 parser.add_argument("--lam_horizon", type=int, default=35)
 parser.add_argument("--max_ticks", type=int, default=None, help="Optional cap on control ticks per episode.")
@@ -215,9 +217,13 @@ FLUSH_RENDERS = 3  # re-renders of the restored state so the RTX temporal histor
 
 
 def replay_branch(env, start_state: dict, targets: list[torch.Tensor], capture: set[int],
-                  nominal_stiffness: torch.Tensor) -> dict[int, dict]:
-    """Ideal execution of ``targets`` (the commands the policy actually issued, i.e. after the client's
+                  nominal_stiffness: torch.Tensor, mode: str = "teleport") -> dict[int, dict]:
+    """Re-execution of ``targets`` (the commands the policy actually issued, i.e. after the client's
     15 deg/tick clamp and before the gap) from ``start_state`` (the scene at the query tick).
+
+    mode="nominal": the same commands on a fault-free arm. All six joints track them through the nominal PD
+    drives (bench stiffness, no delay/offset/backlash, no teleport), exactly as env.step would without a gap.
+    This is the arm the WAM's training data was recorded with. mode="teleport" (below): perfect tracking.
 
     Arm (5 joints): joint positions written at every physics substep (zero velocity), so the arm is exactly
     at the command whatever the actuator does. Jaw: tracked by its PD drive (teleporting it would push
@@ -241,7 +247,8 @@ def replay_branch(env, start_state: dict, targets: list[torch.Tensor], capture: 
             q = tgt.reshape(1, -1).to(u.device)
             robot.set_joint_position_target(q, joint_ids=ids)
             for sub in range(u.cfg.decimation):
-                robot.write_joint_state_to_sim(q[:, :5], zeros, joint_ids=arm_ids)
+                if mode == "teleport":
+                    robot.write_joint_state_to_sim(q[:, :5], zeros, joint_ids=arm_ids)
                 scene.write_data_to_sim()
                 u.sim.step(render=False)
                 if sub == u.cfg.decimation - 1:
@@ -409,13 +416,14 @@ def main() -> None:
                 tgts = [torch.as_tensor(c, device=u.device) for c in log["cmd"][qs: qs + args.replay_ticks]]
                 capture = ({args.lam_horizon} if args.model == "lawam" and not save_frames
                            else set(range(1, len(tgts) + 1)))
-                branch = replay_branch(env, start_state, tgts, capture, nominal_stiffness)
+                branch = replay_branch(env, start_state, tgts, capture, nominal_stiffness, mode=args.replay_mode)
                 if save_frames:
                     ideal_frames[qs] = [_jpeg(_canvas(branch[j])) for j in sorted(branch)]
                 if args.model == "lawam" and args.lam_horizon in branch:
                     vis = branch[args.lam_horizon]
                     res = _post(args.policy_port, "/lam_score", {"return_features": save_frames, "dir": str(out),
-                        "attempt": attempt, "episode": ep_id, "frame": qs, "kind": "ideal", "condition": tag,
+                        "attempt": attempt, "replay_mode": args.replay_mode, "episode": ep_id, "frame": qs, "kind": "ideal",
+                        "condition": tag,
                         "obs_frame": qs + args.lam_horizon, "camera_names": ["overhead", "wrist"],
                         "images_png_base64": [_png_b64(_policy_frame(policy, vis, c)) for c in ("overhead", "wrist")]})
                     _keep_features(feats, "ideal", qs, res)
@@ -438,7 +446,7 @@ def main() -> None:
                      ideal_queries=np.asarray(sorted(ideal_frames)),
                      ideal=np.array([np.array(ideal_frames[k], dtype=object) for k in sorted(ideal_frames)], dtype=object))
         rec = {"episode": ep_id, "trial_id": (episode.metadata or {}).get("trial_id"), "objects": episode.objects, "condition": tag,
-               "attempt": attempt, "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
+               "attempt": attempt, "replay_mode": args.replay_mode, "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
                "wall_s": time.time() - t_ep, "inference_wall_s": t_inf, "replay": do_replay}
         with summary_path.open("a") as f:
             f.write(json.dumps(rec) + "\n")

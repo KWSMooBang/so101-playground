@@ -5,7 +5,7 @@
 Per condition: e_pred (prediction vs observed future) and e_ideal (prediction vs perfect-tracking replay),
 both on the same replayed queries, plotted against e_track (mean |cmd - q| over arm joints, deg).
 
-  t004_plot.py ROOT OUT.png
+  t004_plot.py ROOT_V1 ROOT_V2 OUT.png   (ROOT_V1 = runs/T004, ROOT_V2 = runs/T004_v2)
 """
 
 from __future__ import annotations
@@ -21,28 +21,34 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 BLUE, ORANGE = "#2a78d6", "#eb6834"  # categorical slots 1-2 (dataviz reference palette)
 INK, INK2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
-PANELS = {
-    "lawam": ("LaWAM: LAM DINOv3 token MSE at +35 ticks", "paired_obs_e_pred_lat", "paired_ideal_e_pred_lat"),
-    "flux3": ("FLUX 3 Action: DINOv2 distance, scene view, +16 ticks",
-              "paired_e_pred.dino_scene@16", "paired_e_ideal.dino_scene@16"),
-}
+# (summary root key, model, title, e_pred key, e_ideal key or None). e_ideal is drawn only from runs made with the
+# post-review replay (T004_v2); FLUX's replay values are invalid and it shows e_pred over all queries.
+PANELS = [
+    ("v2", "lawam", "LaWAM: LAM DINOv3 token MSE at +35 ticks (replay v2)",
+     "paired_obs_e_pred_lat", "paired_ideal_e_pred_lat"),
+    ("v1", "flux3", "FLUX 3 Action: DINOv2 distance, scene view, +16 ticks (e_pred only)",
+     "e_pred.dino_scene@16", None),
+]
 
 
 def main() -> None:
-    root, out = Path(sys.argv[1]), Path(sys.argv[2])
-    models = [m for m in PANELS if (root / m / "summary.json").exists()]
-    fig, axes = plt.subplots(1, len(models), figsize=(6.2 * len(models), 4.6), facecolor=SURFACE, squeeze=False)
-    for ax, model in zip(axes[0], models):
-        title, kp, ki = PANELS[model]
-        summary = json.loads((root / model / "summary.json").read_text())
-        rows = [(c, s["e_track_deg"], s.get(kp), s.get(ki)) for c, s in summary.items() if s.get(kp) is not None]
+    roots = {"v1": Path(sys.argv[1]), "v2": Path(sys.argv[2])}
+    out = Path(sys.argv[3])
+    panels = [p for p in PANELS if (roots[p[0]] / p[1] / "summary.json").exists()]
+    fig, axes = plt.subplots(1, len(panels), figsize=(6.2 * len(panels), 4.6), facecolor=SURFACE, squeeze=False)
+    for ax, (rk, model, title, kp, ki) in zip(axes[0], panels):
+        summary = json.loads((roots[rk] / model / "summary.json").read_text())
+        rows = [(c, s["e_track_deg"], s.get(kp), s.get(ki) if ki else None) for c, s in summary.items()
+                if s.get(kp) is not None]
         ax.set_facecolor(SURFACE)
         for c, x, yp, yi in rows:
-            ax.plot([x, x], [yi, yp], color=GRID, lw=2, zorder=1)
+            if yi is not None:
+                ax.plot([x, x], [yi, yp], color=GRID, lw=2, zorder=1)
         ax.scatter([r[1] for r in rows], [r[2] for r in rows], s=64, color=BLUE, marker="o", zorder=3,
                    edgecolors=SURFACE, linewidths=2, label="e_pred: prediction vs observed")
-        ax.scatter([r[1] for r in rows], [r[3] for r in rows], s=64, color=ORANGE, marker="s", zorder=3,
-                   edgecolors=SURFACE, linewidths=2, label="e_ideal: prediction vs perfect-tracking replay")
+        if ki:
+            ax.scatter([r[1] for r in rows], [r[3] for r in rows], s=64, color=ORANGE, marker="s", zorder=3,
+                       edgecolors=SURFACE, linewidths=2, label="e_ideal: prediction vs ideal replay of issued commands")
         # Direct labels; nudge a label below its point when it would collide with one already placed.
         xr = max(r[1] for r in rows) - min(r[1] for r in rows) or 1.0
         yr = max(r[2] for r in rows) - min(r[2] for r in rows) or 1.0
@@ -63,7 +69,7 @@ def main() -> None:
             ax.spines[sp].set_color(GRID)
         ax.tick_params(colors=INK2, labelsize=9)
         ax.legend(frameon=False, fontsize=9, loc="upper left", labelcolor=INK)
-    fig.suptitle("T004: WAM future prediction under injected sim control gaps (same queries for both distances)",
+    fig.suptitle("T004: WAM future prediction under injected sim control gaps (e_pred/e_ideal on the same queries)",
                  fontsize=12, color=INK, x=0.01, ha="left")
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
