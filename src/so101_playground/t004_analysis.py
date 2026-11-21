@@ -52,21 +52,29 @@ def _boot_ci(values: dict, n: int = 2000, seed: int = 0) -> list[float] | None:
     return [float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))]
 
 
-def delta_vs_none(summary: dict, key: str = "_episode_e_pred", n: int = 2000, seed: int = 0) -> None:
-    """Episode-paired bootstrap of (condition - none) in per-episode mean e_pred (same episodes, same layouts)."""
+def delta_vs_none(summary: dict, n: int = 2000, seed: int = 0) -> None:
+    """Episode-paired bootstrap of (condition - none) for every per-episode series stored under "_ep:<name>"
+    (same episodes and layouts across conditions). Writes "<name>_minus_none" and its 95% CI."""
     if "none" not in summary:
         return
-    base = summary["none"].get(key, {})
     rng = np.random.default_rng(seed)
-    for cond, s in summary.items():
-        cur = s.get(key, {})
-        eps = sorted(set(base) & set(cur))
-        if cond == "none" or len(eps) < 2:
+    for key, base in summary["none"].items():
+        if not key.startswith("_ep:"):
             continue
-        d = np.array([cur[e] - base[e] for e in eps])
-        boots = [d[rng.integers(0, len(d), len(d))].mean() for _ in range(n)]
-        s["e_pred_minus_none"] = float(d.mean())
-        s["e_pred_minus_none_ci95"] = [float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))]
+        name = key[4:]
+        for cond, s in summary.items():
+            cur = s.get(key, {})
+            eps = sorted(set(base) & set(cur))
+            if cond == "none" or len(eps) < 2:
+                continue
+            d = np.array([cur[e] - base[e] for e in eps])
+            boots = [d[rng.integers(0, len(d), len(d))].mean() for _ in range(n)]
+            s[f"{name}_minus_none"] = float(d.mean())
+            s[f"{name}_minus_none_ci95"] = [float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))]
+
+
+def _per_episode(values: dict) -> dict:
+    return {str(e): float(np.mean([v for (ee, _), v in values.items() if ee == e])) for e in sorted({k[0] for k in values})}
 
 
 def track_stats(run: Path, horizon: int) -> tuple[dict, dict]:
@@ -125,13 +133,47 @@ def lawam_stats(run: Path, per_query_track: dict) -> dict:
     ratio = {k: r["e_pred_lat"] / r["e_static_lat"] for k, r in obs.items() if r["e_static_lat"] > 0}
     out["obs_e_pred_over_static_median"] = float(np.median(list(ratio.values()))) if ratio else None
     out["obs_e_pred_ci95"] = _boot_ci({k: r["e_pred_lat"] for k, r in obs.items()})
-    out["_episode_e_pred"] = {str(e): float(np.mean([r["e_pred_lat"] for (ee, _), r in obs.items() if ee == e]))
-                              for e in sorted({k[0] for k in obs})}
+    out["_ep:e_pred"] = _per_episode({k: r["e_pred_lat"] for k, r in obs.items()})
     keys = [k for k in obs if k in per_query_track]
     out["spearman_e_pred_vs_e_track_at_h"] = _spearman([obs[k]["e_pred_lat"] for k in keys],
                                                        [per_query_track[k][0] for k in keys])
     out["spearman_e_pred_vs_e_track_chunk"] = _spearman([obs[k]["e_pred_lat"] for k in keys],
                                                         [per_query_track[k][1] for k in keys])
+    return out
+
+
+FLUX_METRICS = ("l1_scene", "l1_wrist", "lpips_scene", "lpips_wrist", "dino_scene", "dino_wrist")
+FLUX_HORIZONS = (8, 16, 31)
+
+
+def flux_stats(run: Path) -> dict:
+    p = run / "flux_metrics.jsonl"
+    rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+    out = {"n_metric_rows": len(rows)}
+    # per-query chunk-mean e_track for the rank correlation
+    _, pq = track_stats(run, 16)
+    for j in FLUX_HORIZONS:
+        rj = [r for r in rows if r["j"] == j]
+        for m in FLUX_METRICS:
+            name = f"{m}@{j}"
+            obs = {(r["episode"], r["frame"]): r[f"pred_obs.{m}"] for r in rj if f"pred_obs.{m}" in r}
+            if not obs:
+                continue
+            out[f"e_pred.{name}"] = float(np.mean(list(obs.values())))
+            out[f"e_pred.{name}_ci95"] = _boot_ci(obs)
+            out[f"_ep:e_pred.{name}"] = _per_episode(obs)
+            ide = {(r["episode"], r["frame"]): r[f"pred_ideal.{m}"] for r in rj if f"pred_ideal.{m}" in r}
+            exe = {(r["episode"], r["frame"]): r[f"obs_ideal.{m}"] for r in rj if f"obs_ideal.{m}" in r}
+            paired = [k for k in ide if k in obs]
+            if paired:
+                diff = {k: obs[k] - ide[k] for k in paired}
+                out[f"paired_e_pred.{name}"] = float(np.mean([obs[k] for k in paired]))
+                out[f"paired_e_ideal.{name}"] = float(np.mean([ide[k] for k in paired]))
+                out[f"paired_diff.{name}"] = float(np.mean(list(diff.values())))
+                out[f"paired_diff.{name}_ci95"] = _boot_ci(diff)
+                out[f"e_exec.{name}"] = float(np.mean(list(exe.values())))
+            keys = [k for k in obs if k in pq]
+            out[f"rho_track.{name}"] = _spearman([obs[k] for k in keys], [pq[k][1] for k in keys])
     return out
 
 
@@ -154,35 +196,57 @@ def main() -> None:
         if args.model == "lawam":
             s.update(lawam_stats(run, pq))
         else:
-            fm = run / "flux_metrics_summary.json"
-            if fm.exists():
-                s.update(json.loads(fm.read_text()))
+            s.update(flux_stats(run))
         summary[cond] = s
     delta_vs_none(summary)
     for s in summary.values():
-        s.pop("_episode_e_pred", None)
+        for k in [k for k in s if k.startswith("_ep:")]:
+            s.pop(k)
     out = args.root / args.model / "summary.json"
     out.write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
-    if args.tsv and args.model == "lawam":
-        cols = ["run_id", "task", "model", "condition", "n_episodes", "success", "e_pred@35", "e_pred@35_paired", "e_ideal@35_paired",
-                "e_static@35", "e_track_deg", "e_track@35_deg", "e_act_lat", "rho_pred_track", "n_queries", "notes"]
-        new = not args.tsv.exists() or not args.tsv.read_text().strip()
-        with args.tsv.open("a") as f:
-            if new:
-                f.write("\t".join(cols) + "\n")
-            for cond, s in summary.items():
-                def g(k, fmt="{:.4f}"):
-                    v = s.get(k)
-                    return "" if v is None else fmt.format(v)
-                row = [f"T004-{cond}", "T004-wam-pred-gap-probe", "lawam", cond, str(s["n_episodes"]), g("success", "{:.3f}"),
-                       g("obs_e_pred_lat"), g("paired_obs_e_pred_lat"), g("paired_ideal_e_pred_lat"), g("obs_e_static_lat"), g("e_track_deg", "{:.3f}"),
-                       g("e_track_at_h_deg", "{:.3f}"), g("obs_e_act_lat"), g("spearman_e_pred_vs_e_track_chunk", "{:.3f}"),
-                       str(s["n_queries"]),
-                       "LaWAM full FT u45k; Bin 1-obj val_set; e_* = LAM DINOv3 token MSE at +35 ticks; "
-                       "paired = replayed queries (every 2nd), same query set for e_pred and e_ideal"]
-                f.write("\t".join(row) + "\n")
+    if args.tsv:
+        write_tsv(args.tsv, args.model, summary)
 
+
+TSV_COLS = ["run_id", "task", "model", "condition", "n_episodes", "success", "e_track_deg", "e_track@h_deg", "metric",
+            "e_pred", "e_pred_paired", "e_ideal_paired", "e_exec", "e_pred_minus_none", "e_pred_minus_none_ci95",
+            "rho_pred_track", "n_queries", "notes"]
+FLUX_PRIMARY = "dino_scene@16"  # fixed before the sweep; others go to notes
+
+
+def write_tsv(path: Path, model: str, summary: dict) -> None:
+    new = not path.exists() or not path.read_text().strip()
+    with path.open("a") as f:
+        if new:
+            f.write("\t".join(TSV_COLS) + "\n")
+        for cond, s in summary.items():
+            def g(k, fmt="{:.4f}"):
+                v = s.get(k)
+                if v is None:
+                    return ""
+                if isinstance(v, list):
+                    return "[" + ",".join(fmt.format(x) for x in v) + "]"
+                return fmt.format(v)
+            if model == "lawam":
+                metric = "LAM_DINOv3_token_mse@35"
+                vals = [g("obs_e_pred_lat"), g("paired_obs_e_pred_lat"), g("paired_ideal_e_pred_lat"), "",
+                        g("e_pred_minus_none"), g("e_pred_minus_none_ci95"), g("spearman_e_pred_vs_e_track_chunk", "{:.3f}")]
+                notes = (f"LaWAM full FT u45k; e_static={g('obs_e_static_lat')}; e_act_lat={g('obs_e_act_lat')}; "
+                         f"paired_diff={g('paired_diff')} ci={g('paired_diff_ci95')}; ideal replay on every 2nd query")
+            else:
+                m = FLUX_PRIMARY
+                metric = f"FLUX_{m}"
+                vals = [g(f"e_pred.{m}"), g(f"paired_e_pred.{m}"), g(f"paired_e_ideal.{m}"), g(f"e_exec.{m}"),
+                        g(f"e_pred.{m}_minus_none"), g(f"e_pred.{m}_minus_none_ci95"), g(f"rho_track.{m}", "{:.3f}")]
+                extra = []
+                for k in ("lpips_scene@16", "lpips_wrist@16", "l1_scene@16", "dino_wrist@16", "dino_scene@8", "dino_scene@31"):
+                    extra.append(f"{k}: pred={g('e_pred.' + k)} ideal={g('paired_e_ideal.' + k)} exec={g('e_exec.' + k)}")
+                notes = "FLUX3 bench LoRA raw u3000; " + "; ".join(extra)
+            row = [f"T004-{model}-{cond}", "T004-wam-pred-gap-probe", model, cond, str(s["n_episodes"]),
+                   g("success", "{:.3f}"), g("e_track_deg", "{:.3f}"), g("e_track_at_h_deg", "{:.3f}"), metric, *vals,
+                   str(s["n_queries"]), notes]
+            f.write("\t".join(row) + "\n")
 
 if __name__ == "__main__":
     main()
