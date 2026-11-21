@@ -97,13 +97,13 @@ def windows(x: np.ndarray, w: int) -> np.ndarray:
     return x[: n * w].reshape(n, w).mean(1) if n else np.zeros(0)
 
 
-def reward_auroc(a: dict, b: dict, rng) -> dict:
+def reward_auroc(a: dict, b: dict, rng, key: str = "e_pred") -> dict:
     """AUROC of e_pred: setting a (uncorrected) vs b (corrected), for three reward granularities."""
     ea, eb = sorted(a), sorted(b)
     feats = {
-        "episode": lambda d, pick: [d[e]["e_pred"].mean() for e in pick if len(d[e]["e_pred"])],
-        "query": lambda d, pick: np.concatenate([d[e]["e_pred"] for e in pick]),
-        f"window{WINDOW}": lambda d, pick: np.concatenate([windows(d[e]["e_pred"], WINDOW) for e in pick]),
+        "episode": lambda d, pick: [d[e][key].mean() for e in pick if len(d[e][key])],
+        "query": lambda d, pick: np.concatenate([d[e][key] for e in pick]),
+        f"window{WINDOW}": lambda d, pick: np.concatenate([windows(d[e][key], WINDOW) for e in pick]),
     }
     out = {}
     for name, f in feats.items():
@@ -142,6 +142,7 @@ def summarize(root: Path) -> dict:
         a0, a1 = data.get(tag_of(g, 0.0)), data.get(tag_of(g, 1.0))
         if a0 and a1:
             summary[tag_of(g, 1.0)]["reward_vs_a0"] = reward_auroc(a0, a1, rng)
+            summary[tag_of(g, 1.0)]["reward_changed_vs_a0"] = reward_auroc(a0, a1, rng, key="e_pred_changed")
         if a0 and base:
             summary[tag_of(g, 0.0)]["reward_vs_none"] = reward_auroc(a0, base, rng)
         if a1 and base:
@@ -191,10 +192,12 @@ def plot(summary: dict, out: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    rows = [("e_pred", "raw e_pred (LAM token MSE @35)"), ("e_track", "e_track (deg)"), ("success", "success rate")]
+    rows = [("e_pred", "raw e_pred\n(LAM token MSE @35)"),
+            ("e_pred_changed", "e_pred, changed tokens\n(top 25% by e_static)"),
+            ("e_track", "e_track (deg)"), ("success", "success rate")]
     titles = {"offset6": "offset6: +6° Pitch/Elbow", "gain2": "gain2: arm stiffness ×0.25",
               "latency6": "latency6: 200 ms delay"}
-    fig, axes = plt.subplots(len(rows), len(GAPS), figsize=(11, 8), sharex=True, sharey="row")
+    fig, axes = plt.subplots(len(rows), len(GAPS), figsize=(11, 10), sharex=True, sharey="row")
     none = summary.get("none", {})
     for j, g in enumerate(GAPS):
         pts = [(a, summary[tag_of(g, a)]) for a in ALPHAS if tag_of(g, a) in summary]
@@ -254,7 +257,7 @@ def main() -> None:
               f"{s['e_pred']:7.4f} {s.get('e_pred_minus_none', 0):+8.4f} {_f(s.get('e_pred_minus_none_ci95')):>20s} "
               f"{s.get('e_pred_changed_minus_none', 0):+8.4f} {s.get('e_pred_unchanged_minus_none', 0):+8.4f}")
     for t, s in summary.items():
-        for k in ("reward_vs_a0", "reward_vs_none", "reward_a1_vs_none"):
+        for k in ("reward_vs_a0", "reward_changed_vs_a0", "reward_vs_none", "reward_a1_vs_none"):
             if k in s:
                 print(t, k, json.dumps({kk: (round(v, 3) if isinstance(v, float) else [round(x, 3) for x in v])
                                         for kk, v in s[k].items()}))
