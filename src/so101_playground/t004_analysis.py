@@ -100,7 +100,7 @@ def main() -> None:
     ap.add_argument("--root", type=Path, required=True, help="/outputs/so101-playground/runs/T004")
     ap.add_argument("--model", required=True)
     ap.add_argument("--horizon", type=int, default=35)
-    ap.add_argument("--conditions", default="none,gain,latency,offset,backlash")
+    ap.add_argument("--conditions", default="none,gain,latency,offset,backlash,gain2,latency6,offset6")
     ap.add_argument("--tsv", type=Path, default=None, help="Append one row per condition (results.tsv).")
     args = ap.parse_args()
     summary = {}

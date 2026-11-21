@@ -19,6 +19,7 @@ shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper):
             commanded (a command-side calibration error).
   backlash  per-joint dead band of +-1.5 deg on the five arm joints: the applied target only moves
             once the command leaves a 3 deg window centred on it, then trails it by 1.5 deg.
+  gain2 / latency6 / offset6   stronger doses: stiffness x0.25, 6-tick (200 ms) delay, +6 deg.
 """
 
 from __future__ import annotations
@@ -52,6 +53,12 @@ CONDITIONS: dict[str, GapConfig] = {
         "offset", offset_deg=(0.0, 3.0, 3.0, 0.0, 0.0, 0.0), description="+3 deg on Pitch and Elbow targets"
     ),
     "backlash": GapConfig("backlash", backlash_deg=1.5, description="+-1.5 deg dead band on arm targets"),
+    # Stronger doses of the same gaps, for a dose-response check.
+    "gain2": GapConfig("gain2", stiffness_scale=0.25, description="arm PD stiffness x0.25"),
+    "latency6": GapConfig("latency6", delay_ticks=6, description="commands delayed 6 ticks (200 ms)"),
+    "offset6": GapConfig(
+        "offset6", offset_deg=(0.0, 6.0, 6.0, 0.0, 0.0, 0.0), description="+6 deg on Pitch and Elbow targets"
+    ),
 }
 
 
