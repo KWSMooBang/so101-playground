@@ -5,7 +5,7 @@ Inputs: ``<root>/lawam/<tag>/`` (episodes.jsonl, ep*.npz from scripts/wam_gap_ev
 ``<gap>-a<alpha>``, and the server log ``<root>/lawam/lam_scores.jsonl`` (rows tagged with the tag).
 
 Per setting (all means query-weighted as in T004 for e_pred; e_track tick-weighted; CIs 95% bootstrap over
-episodes, Δ vs none episode-paired):
+episodes, Δ vs none and AUROC CIs episode-paired):
   success, e_track (|cmd - q| arm, deg; cmd = the policy's command before oracle and gap), e_pred (LAM token MSE
   @35), Δ e_pred vs none, oracle exactness |applied - cmd| (deg; 0 = the arm receives exactly what the policy
   commanded), e_pred on the changed / unchanged token regions (mask = top 25% tokens of the observed change
@@ -58,7 +58,9 @@ def load_setting(run: Path, scores: list[dict]) -> dict:
         for r in mine:
             if "tok_pred" in r:
                 tp, ts = np.asarray(r["tok_pred"]), np.asarray(r["tok_static"])
-                m = ts >= np.quantile(ts, 1 - TOP_FRAC)
+                k = int(round(TOP_FRAC * len(ts)))  # exactly k tokens (64 of 256); ties broken by token index
+                m = np.zeros(len(ts), dtype=bool)
+                m[np.argsort(-ts, kind="stable")[:k]] = True
                 chg.append(tp[m].mean())
                 unchg.append(tp[~m].mean())
         d["e_pred_changed"], d["e_pred_unchanged"] = np.array(chg), np.array(unchg)
@@ -100,6 +102,7 @@ def windows(x: np.ndarray, w: int) -> np.ndarray:
 def reward_auroc(a: dict, b: dict, rng, key: str = "e_pred") -> dict:
     """AUROC of e_pred: setting a (uncorrected) vs b (corrected), for three reward granularities."""
     ea, eb = sorted(a), sorted(b)
+    common = np.array(sorted(set(ea) & set(eb)))  # same episode index = same layout and seed in both settings
     feats = {
         "episode": lambda d, pick: [d[e][key].mean() for e in pick if len(d[e][key])],
         "query": lambda d, pick: np.concatenate([d[e][key] for e in pick]),
@@ -108,7 +111,10 @@ def reward_auroc(a: dict, b: dict, rng, key: str = "e_pred") -> dict:
     out = {}
     for name, f in feats.items():
         out[f"auroc_{name}"] = auroc(f(a, ea), f(b, eb))
-        bs = [auroc(f(a, rng.choice(ea, len(ea))), f(b, rng.choice(eb, len(eb)))) for _ in range(N_BOOT // 4)]
+        bs = []
+        for _ in range(N_BOOT // 4):  # episode-paired: one resample of episode ids used for both settings
+            pick = rng.choice(common, len(common))
+            bs.append(auroc(f(a, pick), f(b, pick)))
         out[f"auroc_{name}_ci95"] = [float(np.nanpercentile(bs, 2.5)), float(np.nanpercentile(bs, 97.5))]
     return out
 

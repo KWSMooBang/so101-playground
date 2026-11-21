@@ -73,9 +73,15 @@ differs only by physics nondeterminism. Its Δ vs none is +0.0038 [0.0003, 0.008
 
 ## Results
 
+> **Caution when reading Δ vs none:** offset6 α=1 is an exact inverse (applied = cmd on every tick), so in effect
+> it is a second `none` run, yet it sits at +0.0038 [0.0003, 0.0080]. The episode-bootstrap CIs do not cover
+> run-to-run (physics nondeterminism) variation. Treat |Δ| ≲ 0.004 in raw e_pred (≲ 0.012 on changed tokens) as
+> noise, even when the CI excludes 0.
+
 Means are query-weighted (e_pred) or tick-weighted (e_track). CIs: 95% bootstrap over episodes; Δ vs none
 episode-paired. "changed tokens" = per query, the 25% of the 16×16 LAM tokens with the largest observed change
-mse(h_t, h_obs) (an approximate arm + object mask; the rest is "unchanged").
+mse(h_t, h_obs) (exactly k = 64 tokens, ties broken by token index; an approximate arm + object mask; the rest is
+"unchanged").
 
 | setting | success | e_track ° | \|applied − cmd\| ° | e_pred | Δ vs none [95% CI] | changed-token Δ vs none | queries |
 |---|---|---|---|---|---|---|---|
@@ -98,13 +104,14 @@ mse(h_t, h_obs) (an approximate arm + object mask; the rest is "unchanged").
 ### Reward discriminability: AUROC that e_pred ranks α=0 (uncorrected) above α=1 (corrected)
 
 0.5 = no signal. Episode = 8 vs 8 episode means; query = single queries; window4 = means of 4 consecutive
-queries (non-overlapping) within an episode. CIs: bootstrap over episodes.
+queries (non-overlapping) within an episode. CIs: episode-paired bootstrap (the same resampled episode ids, i.e.
+the same layouts and seeds, are used for both settings).
 
 | gap | raw e_pred: episode | query | window4 | changed tokens: episode | query | window4 |
 |---|---|---|---|---|---|---|
-| offset6 | 0.59 [0.27, 0.87] | 0.59 [0.48, 0.69] | 0.51 [0.37, 0.64] | 0.77 [0.50, 0.97] | 0.65 [0.58, 0.72] | 0.59 [0.47, 0.73] |
-| gain2 | 0.77 [0.50, 0.95] | 0.69 [0.55, 0.79] | 0.71 [0.55, 0.80] | **0.91 [0.72, 1.00]** | 0.69 [0.57, 0.78] | 0.70 [0.59, 0.78] |
-| latency6 | 0.63 [0.31, 0.91] | 0.45 [0.36, 0.57] | 0.48 [0.30, 0.67] | 0.66 [0.37, 0.94] | 0.46 [0.38, 0.55] | 0.47 [0.28, 0.64] |
+| offset6 | 0.59 [0.29, 0.86] | 0.59 [0.52, 0.66] | 0.51 [0.40, 0.61] | 0.77 [0.46, 0.95] | 0.65 [0.60, 0.71] | 0.59 [0.49, 0.68] |
+| gain2 | 0.77 [0.54, 0.95] | 0.69 [0.55, 0.78] | 0.71 [0.58, 0.80] | **0.91 [0.68, 1.00]** | 0.69 [0.57, 0.80] | 0.70 [0.58, 0.81] |
+| latency6 | 0.63 [0.44, 0.84] | 0.45 [0.40, 0.52] | 0.48 [0.40, 0.58] | 0.66 [0.45, 0.88] | 0.46 [0.42, 0.52] | 0.47 [0.38, 0.59] |
 
 α=1 vs none (should be 0.5): offset6 query 0.51, gain2 0.50, latency6 0.57.
 
