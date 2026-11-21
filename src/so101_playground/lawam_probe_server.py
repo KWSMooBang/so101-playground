@@ -182,6 +182,9 @@ class Probe:
             mem["h_observed"] = h_obs.detach().clone()
         elif "h_observed" in mem:
             out["e_exec_lat"] = float(F.mse_loss(mem["h_observed"], h_obs))
+        if payload.get("token_stats"):  # T005: per-token MSE (256 patch tokens, 16x16 grid, row-major)
+            out["tok_pred"] = [round(float(v), 5) for v in ((pred - h_obs) ** 2).mean(-1)[0].cpu()]
+            out["tok_static"] = [round(float(v), 5) for v in ((h_t - h_obs) ** 2).mean(-1)[0].cpu()]
         self.score_log.write(json.dumps(out) + "\n")
         self.score_log.flush()
         if payload.get("return_features"):  # for visualization: (256 tokens x 768) as fp16 base64

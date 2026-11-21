@@ -65,6 +65,10 @@ parser.add_argument("--replay_ticks", type=int, default=None, help="Ticks per re
 parser.add_argument("--lam_horizon", type=int, default=35)
 parser.add_argument("--max_ticks", type=int, default=None, help="Optional cap on control ticks per episode.")
 parser.add_argument("--initial_hold_time_s", type=float, default=1.5)
+parser.add_argument("--oracle_alpha", type=float, default=0.0,
+                    help="T005: oracle correction strength (so101_playground.oracle), between the clamp and the gap.")
+parser.add_argument("--token_stats", action="store_true",
+                    help="T005: ask /lam_score to log per-token e_pred / e_static (256 values each).")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
@@ -98,6 +102,7 @@ from so101_bench.utils.lerobot_calibration import LEROBOT_INITIAL_JOINT_POS, ler
 from so101_bench.utils.molmoact2 import MolmoAct2RemotePolicy  # noqa: E402
 
 from so101_playground.control_gap import CONDITIONS, JOINT_NAMES, CommandGap, apply_actuator_gap  # noqa: E402
+from so101_playground.oracle import OracleCorrection  # noqa: E402
 
 INITIAL = lerobot_pose_to_sim_joint_pos(LEROBOT_INITIAL_JOINT_POS)
 
@@ -332,6 +337,8 @@ def main() -> None:
 
     policy._query_server = _query
     gap = CommandGap(gap_cfg, u.device)
+    oracle = OracleCorrection(gap_cfg, args.oracle_alpha, u.device)
+    print(f"[T004] oracle alpha={args.oracle_alpha} kind={oracle.kind}: {oracle.describe()}", flush=True)
     robot = u.scene["robot"]
     ids = [robot.joint_names.index(j) for j in JOINT_NAMES]
     nominal_stiffness = robot.data.joint_stiffness.clone()
@@ -358,7 +365,7 @@ def main() -> None:
         policy.reset()
         hold = _hold(u)
         do_replay = ei < args.replay_episodes
-        log = {k: [] for k in ("cmd", "applied", "q", "tick")}
+        log = {k: [] for k in ("cmd", "sent", "applied", "q", "tick")}
         queries, chunks, pending, frames, ideal_frames, feats = [], [], {}, [], {}, {}
         replay_due: dict[int, tuple[int, dict]] = {}  # tick of the chunk's end -> (query tick, scene at query)
         started = False
@@ -382,6 +389,16 @@ def main() -> None:
                 with torch.inference_mode():
                     jp = obs["policy"]["joint_pos_obs"][0].clone()
                     cmd = policy.get_action(jp, obs["visual"]).clone()
+                    # Oracle (T005): row index of cmd in the current chunk, and the clamped row k ahead of it.
+                    n_rows = min(len(last_chunk["chunk"]), args.action_horizon)
+                    row = n_rows - len(policy.action_queue) - 1
+
+                    def lookahead(k, _row=row, _n=n_rows, _jp=jp):
+                        r = torch.as_tensor(last_chunk["chunk"][min(_row + k, _n - 1)], dtype=torch.float32,
+                                            device=u.device)
+                        return policy._limit_joint_step(_jp, policy.mapper.model_positions_to_sim_radians(r))
+
+                    sent = oracle(cmd, jp, lookahead)
                 if need_query:
                     t_inf += time.time() - ti
                     chunk = np.asarray(last_chunk["chunk"], dtype=np.float32)
@@ -393,10 +410,13 @@ def main() -> None:
                         # Snapshot now; replay at the end of this chunk with the commands actually issued.
                         with torch.inference_mode(False):
                             replay_due[step + args.action_horizon] = (step, u.scene.get_state(is_relative=False))
-            applied = gap(cmd) if started else cmd
+            if not started:
+                sent = cmd
+            applied = gap(sent) if started else sent
             obs, _r, terminated, truncated, info = env.step(applied.unsqueeze(0))
             step += 1
             log["cmd"].append(cmd.cpu().numpy())
+            log["sent"].append(sent.cpu().numpy())
             log["applied"].append(applied.cpu().numpy())
             log["q"].append(robot.data.joint_pos[0, ids].cpu().numpy())
             log["tick"].append(step)
@@ -406,6 +426,7 @@ def main() -> None:
             if args.model == "lawam" and step in pending and not ended:
                 qs = pending.pop(step)
                 res = _post(args.policy_port, "/lam_score", {"return_features": save_frames, "dir": str(out),
+                    "token_stats": args.token_stats,
                     "attempt": attempt, "episode": ep_id, "frame": qs, "kind": "observed", "condition": tag, "obs_frame": step,
                     "camera_names": ["overhead", "wrist"],
                     "images_png_base64": [_png_b64(_policy_frame(policy, obs["visual"], c)) for c in ("overhead", "wrist")]})
@@ -446,7 +467,7 @@ def main() -> None:
                      ideal_queries=np.asarray(sorted(ideal_frames)),
                      ideal=np.array([np.array(ideal_frames[k], dtype=object) for k in sorted(ideal_frames)], dtype=object))
         rec = {"episode": ep_id, "trial_id": (episode.metadata or {}).get("trial_id"), "objects": episode.objects, "condition": tag,
-               "attempt": attempt, "replay_mode": args.replay_mode, "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
+               "attempt": attempt, "replay_mode": args.replay_mode, "oracle_alpha": args.oracle_alpha, "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
                "wall_s": time.time() - t_ep, "inference_wall_s": t_inf, "replay": do_replay}
         with summary_path.open("a") as f:
             f.write(json.dumps(rec) + "\n")
