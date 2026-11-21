@@ -22,12 +22,13 @@
 ## 제약
 - 클러스터 GPU: RTX 4090 24GB ×8 (공용). Isaac Sim 은 RT 코어 필요 → 4090 가능.
   bench 의 fine-tuning 레시피(4×A100-80GB, 36h)는 그대로 재현 불가 → LoRA·작은 정책 위주.
-- 컨테이너: Ubuntu 22.04, driver 550.120, NVIDIA Vulkan ICD 없음 → Isaac Sim 동작 여부 T001 에서 확인. 안 되면 새 컨테이너.
+- 컨테이너: Ubuntu 22.04, driver 550.120, NVIDIA Vulkan ICD 없음 → libglu1-mesa 설치 후 Isaac Sim 5.1 + bench 동작 확인 (T003). 새 컨테이너 불필요.
 - /workspace 디스크 여유 ~231G (공용).
 
 ## 백로그
 - [부분] T001-scaffold-env: 골격·submodule·환경 2개 완료(exp/scaffold-env), Isaac 은 libGLU 없어 카메라 env 실패 → libglu1-mesa 설치
-- [진행] T003-isaac-bench-smoke: T001 이어서 bench env headless step
+- [완료] T003-isaac-bench-smoke: So101Bench-Bin-v0 headless 동작(4090, 11.4 step/s, 6.2GB). isaac venv 는 .claude/worktrees/scaffold-env 에 고정(절대경로) → 그 worktree 지우지 말 것
+- [ ] exp/scaffold-env, exp/bench-real-audit main 병합 (codex 리뷰 → 승인)
 - [완료] T002-bench-real-audit: docs/bench-real-setup.md (exp/bench-real-audit). 1순위 = so101_sim_alignment 로 우리 팔 관절 zero 측정(현장 작업). 집 셋업 질문 10개(§7) 답변 대기
 - [ ] 집 데스크탑 robot client ↔ GPU 서버 정책 서버 SSH 터널 연결 테스트 (지연·대역폭 측정)
 - [ ] bench sim 평가 baseline (공개 체크포인트 1~2개, 축소 split)
