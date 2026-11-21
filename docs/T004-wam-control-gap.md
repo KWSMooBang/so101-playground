@@ -270,6 +270,6 @@ envs/flux3/flux-action/.venv/bin/python src/so101_playground/t004_flux_videos.py
 
 # analysis, results.tsv rows, figure
 envs/flux3/flux-action/.venv/bin/python src/so101_playground/t004_analysis.py --root /outputs/so101-playground/runs/T004 \
-    --model lawam --tsv /outputs/so101-playground/results.tsv      # and --model flux3
+    --model lawam --tsv /outputs/so101-playground/results.tsv      # and --model flux3; for runs/T004_nominal add --replay_mode nominal
 envs/flux3/flux-action/.venv/bin/python src/so101_playground/t004_plot.py /outputs/so101-playground/runs/T004 /outputs/so101-playground/runs/T004_nominal out.png
 ```

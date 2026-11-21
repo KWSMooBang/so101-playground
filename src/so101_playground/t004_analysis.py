@@ -121,7 +121,7 @@ def episodes_stats(run: Path) -> dict:
             "n_queries": int(sum(r["n_queries"] for r in rows))}
 
 
-def lawam_stats(run: Path, per_query_track: dict) -> dict:
+def lawam_stats(run: Path, per_query_track: dict, replay_mode: str = "teleport") -> dict:
     p = run.parent / "lam_scores.jsonl"  # one server log for all conditions, rows tagged by condition
     rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
     rows = [r for r in rows if r.get("condition") == run.name and r["episode"] >= 0]
@@ -135,7 +135,9 @@ def lawam_stats(run: Path, per_query_track: dict) -> dict:
                 attempts[e["episode"]] = e["attempt"]
     rows = [r for r in rows if r["episode"] not in attempts or r.get("attempt") == attempts[r["episode"]]]
     obs = {(r["episode"], r["frame"]): r for r in rows if r["kind"] == "observed"}
-    ide = {(r["episode"], r["frame"]): r for r in rows if r["kind"] == "ideal"}
+    # Replay rows of the requested mode only (rows written before the field existed are teleport replays).
+    ide = {(r["episode"], r["frame"]): r for r in rows
+           if r["kind"] == "ideal" and r.get("replay_mode", "teleport") == replay_mode}
     out = {"n_obs_scores": len(obs), "n_ideal_scores": len(ide)}
     for name, d in (("obs", obs), ("ideal", ide)):
         for k in ("e_pred_lat", "cos_pred_lat", "e_static_lat", "e_act_lat", "cos_act_lat", "e_exec_lat"):
@@ -210,6 +212,8 @@ def main() -> None:
     ap.add_argument("--tsv", type=Path, default=None, help="Append one row per condition (results.tsv).")
     ap.add_argument("--run_prefix", default="T004", help="run_id prefix: <prefix>-<model>-<condition>.")
     ap.add_argument("--replay_note", default="", help="Prefix for the notes column describing the replay.")
+    ap.add_argument("--replay_mode", choices=["teleport", "nominal"], default="teleport",
+                    help="Which replay rows to pair with (LaWAM); rows without the field are teleport.")
     ap.add_argument("--ideal_invalid", action="store_true",
                     help="Runs made with the pre-review replay (unclamped chunk targets, gap actuators, no RTX flush): "
                          "write e_ideal / obs-ideal / e_exec as 'invalid'.")
@@ -223,7 +227,7 @@ def main() -> None:
         tr, pq = track_stats(run, args.horizon)
         s.update(tr)
         if args.model == "lawam":
-            s.update(lawam_stats(run, pq))
+            s.update(lawam_stats(run, pq, replay_mode=args.replay_mode))
         else:
             s.update(flux_stats(run))
         summary[cond] = s
