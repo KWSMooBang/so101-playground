@@ -48,15 +48,43 @@ def _pca_maps(feats: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return out
 
 
+def exec_summary(root: Path) -> None:
+    """Per condition: the control gap itself in LAM space (observed vs ideal-replay frame at s+35), next to
+    e_pred (pred vs observed) and e_ideal (pred vs ideal), all on the same queries."""
+    out = {}
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        rows = []
+        for f in sorted(d.glob("lamfeat_ep*.npz")):
+            z = dict(np.load(f))
+            for k in z:
+                if not k.startswith("h_observed_"):
+                    continue
+                s = k.removeprefix("h_observed_")
+                if f"h_ideal_{s}" not in z or f"h_t1_pred_{s}" not in z:
+                    continue
+                o, i, p = (z[n].astype(np.float32) for n in (k, f"h_ideal_{s}", f"h_t1_pred_{s}"))
+                rows.append((float(((o - i) ** 2).mean()), float(((p - o) ** 2).mean()), float(((p - i) ** 2).mean())))
+        if rows:
+            a = np.array(rows)
+            out[d.name] = {"n_queries": len(rows), "e_exec": float(a[:, 0].mean()), "e_pred": float(a[:, 1].mean()),
+                           "e_ideal": float(a[:, 2].mean())}
+    print(json.dumps(out, indent=2))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("run", type=Path)
-    ap.add_argument("out", type=Path)
+    ap.add_argument("run", type=Path, nargs="?")
+    ap.add_argument("out", type=Path, nargs="?")
+    ap.add_argument("--exec_summary", type=Path, default=None,
+                    help="Instead: print per-condition e_exec = mse(LAM(observed s+35), LAM(ideal s+35)) and "
+                         "e_pred/e_ideal from lamfeat_ep*.npz under DIR/<cond>/.")
     ap.add_argument("--episode", type=int, default=0)
     ap.add_argument("--horizon", type=int, default=35)
     ap.add_argument("--scores", type=Path, default=None, help="lam_scores.jsonl (default: <run>/../lam_scores.jsonl)")
     ap.add_argument("--tag", default=None, help="condition tag in lam_scores.jsonl (default: run dir name)")
     args = ap.parse_args()
+    if args.exec_summary is not None:
+        return exec_summary(args.exec_summary)
     ep = args.episode
     fz = np.load(args.run / f"frames_ep{ep:03d}.npz", allow_pickle=True)
     feats = dict(np.load(args.run / f"lamfeat_ep{ep:03d}.npz"))

@@ -38,6 +38,37 @@ def _spearman(a, b) -> float | None:
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
+def _boot_ci(values: dict, n: int = 2000, seed: int = 0) -> list[float] | None:
+    """95% CI of the mean over queries, resampling whole episodes (keys are (episode, frame))."""
+    eps = sorted({k[0] for k in values})
+    if len(eps) < 2:
+        return None
+    by_ep = {e: [v for (ee, _), v in values.items() if ee == e] for e in eps}
+    rng = np.random.default_rng(seed)
+    means = []
+    for _ in range(n):
+        pick = rng.choice(eps, size=len(eps), replace=True)
+        means.append(np.mean(np.concatenate([by_ep[e] for e in pick])))
+    return [float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))]
+
+
+def delta_vs_none(summary: dict, key: str = "_episode_e_pred", n: int = 2000, seed: int = 0) -> None:
+    """Episode-paired bootstrap of (condition - none) in per-episode mean e_pred (same episodes, same layouts)."""
+    if "none" not in summary:
+        return
+    base = summary["none"].get(key, {})
+    rng = np.random.default_rng(seed)
+    for cond, s in summary.items():
+        cur = s.get(key, {})
+        eps = sorted(set(base) & set(cur))
+        if cond == "none" or len(eps) < 2:
+            continue
+        d = np.array([cur[e] - base[e] for e in eps])
+        boots = [d[rng.integers(0, len(d), len(d))].mean() for _ in range(n)]
+        s["e_pred_minus_none"] = float(d.mean())
+        s["e_pred_minus_none_ci95"] = [float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))]
+
+
 def track_stats(run: Path, horizon: int) -> tuple[dict, dict]:
     """Returns (summary, per-query e_track@horizon keyed by (episode, query_frame))."""
     per_tick, per_query = [], {}
@@ -87,6 +118,15 @@ def lawam_stats(run: Path, per_query_track: dict) -> dict:
     if paired:
         out["paired_obs_e_pred_lat"] = float(np.mean([obs[k]["e_pred_lat"] for k in paired]))
         out["paired_ideal_e_pred_lat"] = float(np.mean([ide[k]["e_pred_lat"] for k in paired]))
+        diff = {k: obs[k]["e_pred_lat"] - ide[k]["e_pred_lat"] for k in paired}
+        out["paired_diff"] = float(np.mean(list(diff.values())))
+        out["paired_diff_ci95"] = _boot_ci(diff)
+        out["paired_obs_gt_ideal_frac"] = float(np.mean([v > 0 for v in diff.values()]))
+    ratio = {k: r["e_pred_lat"] / r["e_static_lat"] for k, r in obs.items() if r["e_static_lat"] > 0}
+    out["obs_e_pred_over_static_median"] = float(np.median(list(ratio.values()))) if ratio else None
+    out["obs_e_pred_ci95"] = _boot_ci({k: r["e_pred_lat"] for k, r in obs.items()})
+    out["_episode_e_pred"] = {str(e): float(np.mean([r["e_pred_lat"] for (ee, _), r in obs.items() if ee == e]))
+                              for e in sorted({k[0] for k in obs})}
     keys = [k for k in obs if k in per_query_track]
     out["spearman_e_pred_vs_e_track_at_h"] = _spearman([obs[k]["e_pred_lat"] for k in keys],
                                                        [per_query_track[k][0] for k in keys])
@@ -118,6 +158,9 @@ def main() -> None:
             if fm.exists():
                 s.update(json.loads(fm.read_text()))
         summary[cond] = s
+    delta_vs_none(summary)
+    for s in summary.values():
+        s.pop("_episode_e_pred", None)
     out = args.root / args.model / "summary.json"
     out.write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
