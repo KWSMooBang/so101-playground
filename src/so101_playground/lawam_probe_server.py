@@ -178,6 +178,9 @@ class Probe:
         out.update({k: payload[k] for k in ("condition",) if k in payload})
         self.score_log.write(json.dumps(out) + "\n")
         self.score_log.flush()
+        if payload.get("return_features"):  # for visualization: (256 tokens x 768) as fp16 base64
+            for name, t in (("h_t", h_t), ("h_t1_pred", pred), ("h_obs", h_obs)):
+                out[name] = base64.b64encode(t[0].half().cpu().numpy().tobytes()).decode("ascii")
         return out
 
 

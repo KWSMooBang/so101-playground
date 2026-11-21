@@ -55,6 +55,7 @@ parser.add_argument("--policy_port", type=int, default=8000)
 parser.add_argument("--action_horizon", type=int, default=None)
 parser.add_argument("--history_ticks", type=int, default=None)
 parser.add_argument("--replay_episodes", type=int, default=0)
+parser.add_argument("--save_frames", action="store_true", help="Store canvases (and LaWAM LAM features) for videos.")
 parser.add_argument("--replay_every", type=int, default=1, help="Replay every k-th query of a replay episode.")
 parser.add_argument("--replay_ticks", type=int, default=None, help="Ticks per replay branch (default per model).")
 parser.add_argument("--lam_horizon", type=int, default=35)
@@ -197,6 +198,15 @@ def _post(port: int, path: str, payload: dict) -> dict:
         return {}
 
 
+def _keep_features(feats: dict, kind: str, frame: int, res: dict) -> None:
+    """LaWAM features returned by /lam_score (return_features): 256 x 768 fp16 per key."""
+    for name in ("h_t", "h_t1_pred", "h_obs"):
+        if name in res:
+            arr = np.frombuffer(base64.b64decode(res[name]), dtype=np.float16).reshape(256, -1)
+            key = f"{name}_{frame}" if name != "h_obs" else f"h_{kind}_{frame}"
+            feats[key] = arr
+
+
 # ---------------------------------------------------------------- ideal (kinematic) replay branch
 def replay_branch(env, targets: list[torch.Tensor], capture: set[int]) -> dict[int, dict]:
     """Execute ``targets`` with perfect tracking from the current state; return visual obs after tick j
@@ -234,6 +244,7 @@ def replay_branch(env, targets: list[torch.Tensor], capture: set[int]) -> dict[i
 # ---------------------------------------------------------------- main
 def main() -> None:
     gap_cfg = CONDITIONS[args.condition]
+    save_frames = args.save_frames or args.model == "flux3"
     out = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
     episodes = [e for e in load_episode_jsonl(args.episodes_jsonl) if episode_is_executable(e)]
@@ -307,7 +318,7 @@ def main() -> None:
         hold = _hold(u)
         do_replay = ei < args.replay_episodes
         log = {k: [] for k in ("cmd", "applied", "q", "tick")}
-        queries, chunks, pending, frames, ideal_frames = [], [], {}, [], {}
+        queries, chunks, pending, frames, ideal_frames, feats = [], [], {}, [], {}, {}
         started = False
         step = 0
         success, reason = False, "unknown"
@@ -339,14 +350,18 @@ def main() -> None:
                     if do_replay and (len(queries) - 1) % args.replay_every == 0:
                         tgts = [policy.mapper.model_positions_to_sim_radians(
                             torch.as_tensor(row, device=u.device)) for row in chunk[: args.replay_ticks]]
-                        capture = {args.lam_horizon} if args.model == "lawam" else set(range(1, len(tgts) + 1))
+                        capture = ({args.lam_horizon} if args.model == "lawam" and not save_frames
+                                   else set(range(1, len(tgts) + 1)))
                         branch = replay_branch(env, tgts, capture)
                         if args.model == "lawam" and args.lam_horizon in branch:
                             vis = branch[args.lam_horizon]
-                            _post(args.policy_port, "/lam_score", {
+                            if save_frames:
+                                ideal_frames[step] = [_jpeg(_canvas(branch[j])) for j in sorted(branch)]
+                            res = _post(args.policy_port, "/lam_score", {"return_features": save_frames,
                                 "episode": ep_id, "frame": step, "kind": "ideal", "condition": args.run_tag or args.condition,
                                 "obs_frame": step + args.lam_horizon, "camera_names": ["overhead", "wrist"],
                                 "images_png_base64": [_png_b64(_policy_frame(policy, vis, c)) for c in ("overhead", "wrist")]})
+                            _keep_features(feats, "ideal", step, res)
                         elif args.model == "flux3":
                             ideal_frames[step] = [_jpeg(_canvas(branch[j])) for j in sorted(branch)]
             applied = gap(cmd) if started else cmd
@@ -356,15 +371,16 @@ def main() -> None:
             log["applied"].append(applied.cpu().numpy())
             log["q"].append(robot.data.joint_pos[0, ids].cpu().numpy())
             log["tick"].append(step)
-            if args.model == "flux3":
+            if save_frames:
                 frames.append(_jpeg(_canvas(obs["visual"])))
             ended = bool(terminated.any() or truncated.any())
             if args.model == "lawam" and step in pending and not ended:
                 qs = pending.pop(step)
-                _post(args.policy_port, "/lam_score", {
+                res = _post(args.policy_port, "/lam_score", {"return_features": save_frames,
                     "episode": ep_id, "frame": qs, "kind": "observed", "condition": args.run_tag or args.condition, "obs_frame": step,
                     "camera_names": ["overhead", "wrist"],
                     "images_png_base64": [_png_b64(_policy_frame(policy, obs["visual"], c)) for c in ("overhead", "wrist")]})
+                _keep_features(feats, "observed", qs, res)
             if ended:
                 term = info.get("log", {})
                 success = bool(term.get("Episode_Termination/success", 0.0) > 0.0)
@@ -377,7 +393,9 @@ def main() -> None:
             out / f"ep{ep_id:03d}.npz", hold_steps=hold_steps,
             **{k: np.asarray(v) for k, v in log.items()}, queries=np.asarray(queries),
             chunks=np.asarray(chunks) if chunks else np.zeros((0,)))
-        if args.model == "flux3":
+        if feats:
+            np.savez_compressed(out / f"lamfeat_ep{ep_id:03d}.npz", **feats)
+        if save_frames:
             np.savez(out / f"frames_ep{ep_id:03d}.npz", observed=np.array(frames, dtype=object),
                      ideal_queries=np.asarray(sorted(ideal_frames)),
                      ideal=np.array([np.array(ideal_frames[k], dtype=object) for k in sorted(ideal_frames)], dtype=object))

@@ -101,6 +101,7 @@ def main() -> None:
     ap.add_argument("--model", required=True)
     ap.add_argument("--horizon", type=int, default=35)
     ap.add_argument("--conditions", default="none,gain,latency,offset,backlash")
+    ap.add_argument("--tsv", type=Path, default=None, help="Append one row per condition (results.tsv).")
     args = ap.parse_args()
     summary = {}
     for cond in args.conditions.split(","):
@@ -120,6 +121,24 @@ def main() -> None:
     out = args.root / args.model / "summary.json"
     out.write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
+    if args.tsv and args.model == "lawam":
+        cols = ["run_id", "task", "model", "condition", "n_episodes", "success", "e_pred@35", "e_pred@35_paired", "e_ideal@35_paired",
+                "e_static@35", "e_track_deg", "e_track@35_deg", "e_act_lat", "rho_pred_track", "n_queries", "notes"]
+        new = not args.tsv.exists() or not args.tsv.read_text().strip()
+        with args.tsv.open("a") as f:
+            if new:
+                f.write("\t".join(cols) + "\n")
+            for cond, s in summary.items():
+                def g(k, fmt="{:.4f}"):
+                    v = s.get(k)
+                    return "" if v is None else fmt.format(v)
+                row = [f"T004-{cond}", "T004-wam-pred-gap-probe", "lawam", cond, str(s["n_episodes"]), g("success", "{:.3f}"),
+                       g("obs_e_pred_lat"), g("paired_obs_e_pred_lat"), g("paired_ideal_e_pred_lat"), g("obs_e_static_lat"), g("e_track_deg", "{:.3f}"),
+                       g("e_track_at_h_deg", "{:.3f}"), g("obs_e_act_lat"), g("spearman_e_pred_vs_e_track_chunk", "{:.3f}"),
+                       str(s["n_queries"]),
+                       "LaWAM full FT u45k; Bin 1-obj val_set; e_* = LAM DINOv3 token MSE at +35 ticks; "
+                       "paired = replayed queries (every 2nd), same query set for e_pred and e_ideal"]
+                f.write("\t".join(row) + "\n")
 
 
 if __name__ == "__main__":
