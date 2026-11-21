@@ -128,8 +128,8 @@ gains are restored afterwards, and the restored scene is re-rendered 3× before 
   physics substep, i.e. perfect tracking. The jaw tracks through nominal PD.
 - **nominal** (`runs/T004_nominal`, decision 2026-11-21): the same commands on a fault-free arm. All joints run
   through the nominal PD drives, as the training data was recorded, with no teleport, delay, offset or backlash.
-  The run covers none and latency6 × 8 ep and gain2 × 4 ep. The 10.8 GPU-h cap was reached when GPU 1 slowed down
-  next to an external process, so gain was not run.
+  The run covers none, gain, gain2 and latency6 × 8 ep. gain2 episodes 4–7 and gain were completed in a second
+  session after the cap was raised to 12.0.
 
 The nominal comparison answers the H2 question directly. d_fault = d(prediction, the gap arm's actual
 future), d_nominal = d(prediction, a fault-free arm given the same commands). A positive d_fault − d_nominal
@@ -140,14 +140,18 @@ means the prediction is closer to what a fault-free arm would have done.
 | cond | ep | success | e_track ° | e_pred (all queries) | Δ vs none | d_fault | d_nominal | **d_fault − d_nominal** | Δ of that vs none | d(fault obs, nominal obs) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | none | 8 | 8/8 | 0.66 | 0.0753 | — | 0.0754 | 0.0769 | −0.0015 [−0.0038, −0.0001] (noise floor) | — | 0.019 [0.012, 0.031] |
-| gain2 | 4 | 1/4 | 2.20 | 0.0885 | +0.016 [−0.004, 0.030] | 0.0930 | 0.0853 | **+0.0077 [0.0022, 0.0169]** | +0.0094 [0.0035, 0.0170] | 0.054 [0.043, 0.061] |
-| latency6 | 8 | 7/8 | 2.46 | 0.0969 | +0.022 [0.010, 0.034] | 0.0946 | 0.0832 | **+0.0114 [0.0066, 0.0153]** | +0.0129 [0.0089, 0.0164] | 0.067 [0.058, 0.076] |
+| gain | 8 | 7/8 | 1.38 | 0.0806 | +0.005 [−0.001, 0.012] | 0.0811 | 0.0790 | +0.0021 [−0.0016, 0.0053] | +0.0036 [0.0004, 0.0069] | 0.037 [0.030, 0.046] |
+| gain2 | 8 | 5/8 | 2.23 | 0.0846 | +0.009 [−0.004, 0.022] | 0.0858 | 0.0801 | **+0.0056 [0.0010, 0.0105]** | +0.0072 [0.0027, 0.0123] | 0.054 [0.048, 0.059] |
+| latency6 | 8 | 7/8 | 2.46 | 0.0969 | +0.022 [0.011, 0.033] | 0.0946 | 0.0832 | **+0.0114 [0.0066, 0.0153]** | +0.0129 [0.0087, 0.0166] | 0.067 [0.058, 0.076] |
 
 - In `none` both observations should be the same, and they nearly are. d(fault obs, nominal obs) = 0.019 and
   d_fault − d_nominal = −0.0015 give the render/physics noise floor.
-- Under the strong gaps the prediction is clearly closer to the fault-free arm's outcome: +0.008 (gain2) and
-  +0.011 (latency6), 5–8× the noise floor.
-- The gap itself moves the scene by 0.054–0.067 in LAM space, about 3× the floor.
+- The paired difference grows with the fault in a dose-response, in step with how much the fault changes the scene:
+  none −0.0015 → gain (×0.5) +0.0021 → gain2 (×0.25) +0.0056 → latency6 +0.0114.
+- Δ vs none is significant for all three faults; the raw difference clears zero for gain2 and latency6.
+- d(fault obs, nominal obs) goes 0.019 → 0.037 → 0.054 → 0.067.
+- On average the prediction sits on the fault-free side of the actual outcome, by 6% (gain), 10% (gain2) and
+  17% (latency6) of the fault's own visual effect d(fault obs, nominal obs).
 
 ### LaWAM, teleport replay v2 (same conditions, 8 ep each)
 
@@ -176,7 +180,7 @@ only move obs − ideal from −0.009 up to ~0. The nominal replay removes that 
 | offset6 | 1/8 | 2.06 | 0.0798 | +0.0059 [−0.0020, 0.0153] |
 
 Across the 8 condition means, r(e_track, e_pred) = 0.83. The three runs differ in rollouts and success
-(e.g. gain2 7/8, 4/8, 1/4) because the replay and physics nondeterminism change the closed loop; that is a
+(e.g. gain2 7/8, 4/8, 5/8) because the replay and physics nondeterminism change the closed loop; that is a
 caveat on any single-condition number.
 
 ### FLUX 3 Action (first sweep, 8 ep; e_pred only, ideal/exec invalid, no re-run by decision)
@@ -199,18 +203,32 @@ the arm (nominal e_track 1.68°) and e_track barely moves under gain/offset.
 
 With the corrected baseline the H2-P0 signal is there for LaWAM. When the arm is faulty, LaWAM's prediction of
 the future is closer to what a fault-free arm would have done with the same commands than to what the faulty arm
-did: d_fault − d_nominal = +0.008 (gain2), +0.011 (latency6) vs a −0.0015 floor in `none`. The
-gap's own visual effect (d(fault obs, nominal obs) 0.05–0.07) is clearly above the floor (0.019).
+did. d_fault − d_nominal rises with the fault: −0.0015 (none, floor), +0.002 (gain), +0.006 (gain2),
++0.011 (latency6). Δ vs none is significant for all three. The fault's own visual effect (d(fault obs, nominal
+obs) 0.037–0.067) is clearly above the floor (0.019).
 
-So "predicted future vs observed future" carries information about the control gap, and the right reward
-for P1 is the paired difference against a nominal reference, not raw e_pred. Raw e_pred also rises (Δ +0.02 at
-the strong doses), but it is confounded by the state distribution: the gap changes where the closed loop goes.
+What this means for P1:
+
+- **Reward candidate: raw e_pred only.** P1 needs a reward computable from a real rollout, and on the real robot
+  there is no nominal replay. The only candidate is raw e_pred = d(prediction, actual observation). In the nominal
+  run its Δ vs none is +0.005 (gain), +0.009 (gain2), +0.022 (latency6); only latency6 clears zero there, and gain2
+  did in the first sweep (+0.024).
+- **The paired d_fault − d_nominal is a sim-only validation metric, not a reward.** It shows that the prediction
+  sits on the fault-free side of the actual outcome. So moving the arm to reduce e_pred moves it toward the
+  fault-free arm's behaviour: the direction an e_pred-minimizing adapter should learn.
+- **Risks for RL with raw e_pred:**
+  - Most of e_pred is the model's own prediction error: the gap-attributable part (d_fault − d_nominal) is ~3–12% of
+    d_fault, so the reward is noisy.
+  - The gap also shifts the closed-loop state distribution, and e_pred depends on the state (e.g. it is lower in
+    simple approach phases).
+  - Both must be handled in RL with a baseline or value function, e.g. a state-dependent baseline of e_pred
+    learned on the nominal arm, so that only the gap-attributable excess is rewarded. Otherwise the adapter can
+    reduce e_pred by steering into easy-to-predict states (reward hacking).
 
 Limits:
-- Only the strong doses were tested with the nominal baseline. The mild doses (3°, 100 ms, ×0.5) moved raw e_pred
+- The nominal baseline covers gain (×0.5), gain2 and latency6; latency/offset/backlash were not re-run. Mild doses moved raw e_pred
   by amounts inside the CI with 8 episodes.
-- gain2 has 4 episodes.
-- The effect is ~10–15% of the prediction error itself, so a per-query reward will be noisy.
+- The effect is ~3–12% of the prediction error itself, so a per-query reward will be noisy.
 - FLUX is not re-evaluated.
 
 ## Compute
@@ -221,10 +239,11 @@ Limits:
 | FLUX metric recompute | | ~0.05 |
 | v2 teleport: smoke + 4 conditions | 22:40–23:30 | 0.83 |
 | nominal: smoke + none, latency6, gain2 (4 ep) | 23:31–00:43 | 1.2 |
-| **T004 total** | | **≈ 10.8** (cap raised to 10.8 by human decision) |
+| nominal: gain2 ep 4–7 + gain 8 ep (2 parallel clients) | 01:00–01:19 | 0.32 |
+| **T004 total** | | **≈ 11.1** (cap raised to 12.0 by human decision) |
 
-During the nominal run a 3.1 GB process outside T004 on GPU 1 caused one OOM at Isaac startup (gain; re-queued,
-then cut at the cap) and slowed episodes about 3×.
+During the first nominal session a 3.1 GB process outside T004 on GPU 1 caused one OOM at Isaac startup (gain) and
+slowed episodes about 3×. That session stopped at the 10.8 cap; the second session ran on a free GPU 1.
 
 ## Reproduce
 
