@@ -4,8 +4,8 @@ Without --task: start Isaac Sim, create an empty stage, step physics a few times
 With --task: create one SO-101 Bench env and step it with random actions (no policy).
 
     source envs/isaac/env.sh
-    CUDA_VISIBLE_DEVICES=<gpu> python scripts/isaac_smoke.py --headless
-    CUDA_VISIBLE_DEVICES=<gpu> python scripts/isaac_smoke.py --headless --enable_cameras \
+    CUDA_VISIBLE_DEVICES=0 python scripts/isaac_smoke.py --headless
+    CUDA_VISIBLE_DEVICES=0 python scripts/isaac_smoke.py --headless --enable_cameras \
         --task So101Bench-Bin-v0 --steps 100 --save_frames outputs/smoke
 """
 
@@ -127,13 +127,22 @@ def bench_env() -> None:
 
 if __name__ == "__main__":
     import os
+    import sys
     import threading
+    import traceback
 
     code = 1
     try:
         bench_env() if args.task else empty_stage()
         print(f"[smoke] PASS total {time.time() - t0:.1f}s", flush=True)
         code = 0
+    except BaseException:
+        # os._exit below skips the interpreter's own traceback printing.
+        traceback.print_exc()
+        print("[smoke] FAIL", flush=True)
+        # simulation_app.close() ends the process with status 0, so do not go through it on failure.
+        sys.stderr.flush()
+        os._exit(1)
     finally:
         # Kit sometimes hangs on shutdown in headless containers; do not hold the GPU if it does.
         threading.Timer(30.0, lambda: os._exit(code)).start()

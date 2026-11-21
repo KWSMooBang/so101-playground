@@ -3,7 +3,11 @@
 if [ -n "${BASH_SOURCE:-}" ]; then _self="${BASH_SOURCE[0]}"; else _self="${(%):-%x}"; fi
 _here="$(cd "$(dirname "$_self")" && pwd)"
 
-source "$_here/.venv/bin/activate"
+if ! source "$_here/.venv/bin/activate"; then
+    echo "env.sh: no venv at $_here/.venv (run $_here/setup_lerobot.sh)" >&2
+    unset _self _here
+    return 1
+fi
 export OMNI_KIT_ACCEPT_EULA=YES
 export SO101_BENCH_ROOT="$(cd "$_here/../../third_party/so101_bench" && pwd)"
 export ISAACLAB_SH="$(cd "$_here/../isaac" && pwd)/IsaacLab/isaaclab.sh"

@@ -61,8 +61,8 @@ numpy to 2.x. `isaaclab.sh -p` still works for running scripts.
 ```bash
 source envs/isaac/env.sh
 python third_party/so101_bench/scripts/download_assets.py      # ~2 GB of USD assets, once
-CUDA_VISIBLE_DEVICES=<gpu> python scripts/isaac_smoke.py --headless                     # empty stage
-CUDA_VISIBLE_DEVICES=<gpu> python scripts/isaac_smoke.py --headless --enable_cameras \
+CUDA_VISIBLE_DEVICES=0 python scripts/isaac_smoke.py --headless                     # empty stage
+CUDA_VISIBLE_DEVICES=0 python scripts/isaac_smoke.py --headless --enable_cameras \
     --task So101Bench-Bin-v0 --steps 20                                                 # bench env, random actions
 ```
 
@@ -74,7 +74,7 @@ NVIDIA manifest. Check with `vulkaninfo --summary` after sourcing `env.sh`.
 
 The same file sets `__EGL_VENDOR_LIBRARY_FILENAMES` to `envs/isaac/nvidia_egl_vendor.json` for EGL.
 
-**GPU selection.** Use `CUDA_VISIBLE_DEVICES=<gpu>`. `--device cuda:N` with N > 0 hangs
+**GPU selection.** Use `CUDA_VISIBLE_DEVICES=N` (N = GPU index from `nvidia-smi`; the commands above use 0). `--device cuda:N` with N > 0 hangs
 ("GPUs other than cuda:0 are not currently supported") and allocates memory on every GPU.
 
 **System library needed: `libglu1-mesa`.** Isaac Sim's MDL SDK (`libneuray.so`) links `libGLU.so.1`,

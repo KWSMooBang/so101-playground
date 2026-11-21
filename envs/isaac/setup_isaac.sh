@@ -39,9 +39,17 @@ uv pip install --build-constraint "$HERE/build-constraints.txt" -c "$HERE/constr
     -e "$SRC/isaaclab_rl" -e "$SRC/isaaclab_mimic" -e "$SRC/isaaclab_contrib" \
     -e "$ROOT/third_party/so101_bench/source/so101_bench"
 
-"$VENV/bin/python" -c "import isaaclab, isaaclab_tasks, so101_bench, torch, numpy; \
-assert numpy.__version__.startswith('1.'), numpy.__version__; print('torch', torch.__version__, 'numpy', numpy.__version__)"
+# Check the install without importing the extensions: isaaclab_tasks and so101_bench import omni/pxr
+# modules that exist only inside a running Kit app. scripts/isaac_smoke.py is the runtime check.
+"$VENV/bin/python" -c "
+import importlib.util, numpy, torch
+missing = [m for m in ('isaacsim', 'isaaclab', 'isaaclab_assets', 'isaaclab_tasks', 'so101_bench')
+           if importlib.util.find_spec(m) is None]
+assert not missing, f'not installed: {missing}'
+assert numpy.__version__.startswith('1.'), numpy.__version__
+print('torch', torch.__version__, 'numpy', numpy.__version__)"
 
 echo "[setup_isaac] done. Next:"
 echo "  source envs/isaac/env.sh"
 echo "  python third_party/so101_bench/scripts/download_assets.py   # ~2 GB"
+echo "  CUDA_VISIBLE_DEVICES=0 python scripts/isaac_smoke.py --headless   # runtime check"
