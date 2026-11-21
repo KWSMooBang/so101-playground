@@ -28,6 +28,7 @@ import base64
 import io
 import json
 import math
+import os
 from pathlib import Path
 import random
 import sys
@@ -42,6 +43,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument("--task", default="So101Bench-Bin-v0")
 parser.add_argument("--model", choices=["lawam", "flux3"], required=True)
 parser.add_argument("--condition", default="none")
+parser.add_argument("--run_tag", default=None, help="Label for logs and server scores (default: the condition).")
 parser.add_argument("--episodes_jsonl", type=Path, required=True)
 parser.add_argument("--layouts_jsonl", type=Path, required=True)
 parser.add_argument("--num_episodes", type=int, default=None)
@@ -53,6 +55,7 @@ parser.add_argument("--policy_port", type=int, default=8000)
 parser.add_argument("--action_horizon", type=int, default=None)
 parser.add_argument("--history_ticks", type=int, default=None)
 parser.add_argument("--replay_episodes", type=int, default=0)
+parser.add_argument("--replay_every", type=int, default=1, help="Replay every k-th query of a replay episode.")
 parser.add_argument("--replay_ticks", type=int, default=None, help="Ticks per replay branch (default per model).")
 parser.add_argument("--lam_horizon", type=int, default=35)
 parser.add_argument("--max_ticks", type=int, default=None, help="Optional cap on control ticks per episode.")
@@ -185,8 +188,13 @@ def _policy_frame(policy: MolmoAct2RemotePolicy, visual: dict, cam: str) -> np.n
 def _post(port: int, path: str, payload: dict) -> dict:
     req = request.Request(f"http://{args.policy_host}:{port}{path}", data=json.dumps(payload).encode(),
                           headers={"Content-Type": "application/json"})
-    with request.urlopen(req, timeout=300) as r:
-        return json.loads(r.read())
+    try:
+        with request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read())
+    except Exception as exc:  # a failed score must not end the rollout
+        detail = exc.read().decode(errors="replace") if hasattr(exc, "read") else ""
+        print(f"[T004][WARN] {path} failed: {exc} {detail}", flush=True)
+        return {}
 
 
 # ---------------------------------------------------------------- ideal (kinematic) replay branch
@@ -201,7 +209,9 @@ def replay_branch(env, targets: list[torch.Tensor], capture: set[int]) -> dict[i
         saved_target = robot.data.joint_pos_target.clone()
         out = {}
         zeros = torch.zeros((1, len(ids)), device=u.device)
-        for j, tgt in enumerate(targets, start=1):
+        # Render every tick exactly as env.step does: skipping renders changes the RTX image (temporal
+        # accumulation), measured +-10% on the LAM score. Ticks after the last capture are skipped.
+        for j, tgt in enumerate(targets[: max(capture)], start=1):
             q = tgt.reshape(1, -1).to(u.device)
             robot.write_joint_state_to_sim(q, zeros, joint_ids=ids)
             robot.set_joint_position_target(q, joint_ids=ids)
@@ -326,7 +336,7 @@ def main() -> None:
                     chunks.append(chunk)
                     if args.model == "lawam":
                         pending[step + args.lam_horizon] = step
-                    if do_replay:
+                    if do_replay and (len(queries) - 1) % args.replay_every == 0:
                         tgts = [policy.mapper.model_positions_to_sim_radians(
                             torch.as_tensor(row, device=u.device)) for row in chunk[: args.replay_ticks]]
                         capture = {args.lam_horizon} if args.model == "lawam" else set(range(1, len(tgts) + 1))
@@ -334,7 +344,7 @@ def main() -> None:
                         if args.model == "lawam" and args.lam_horizon in branch:
                             vis = branch[args.lam_horizon]
                             _post(args.policy_port, "/lam_score", {
-                                "episode": ep_id, "frame": step, "kind": "ideal", "condition": args.condition,
+                                "episode": ep_id, "frame": step, "kind": "ideal", "condition": args.run_tag or args.condition,
                                 "obs_frame": step + args.lam_horizon, "camera_names": ["overhead", "wrist"],
                                 "images_png_base64": [_png_b64(_policy_frame(policy, vis, c)) for c in ("overhead", "wrist")]})
                         elif args.model == "flux3":
@@ -352,7 +362,7 @@ def main() -> None:
             if args.model == "lawam" and step in pending and not ended:
                 qs = pending.pop(step)
                 _post(args.policy_port, "/lam_score", {
-                    "episode": ep_id, "frame": qs, "kind": "observed", "condition": args.condition, "obs_frame": step,
+                    "episode": ep_id, "frame": qs, "kind": "observed", "condition": args.run_tag or args.condition, "obs_frame": step,
                     "camera_names": ["overhead", "wrist"],
                     "images_png_base64": [_png_b64(_policy_frame(policy, obs["visual"], c)) for c in ("overhead", "wrist")]})
             if ended:
@@ -371,7 +381,7 @@ def main() -> None:
             np.savez(out / f"frames_ep{ep_id:03d}.npz", observed=np.array(frames, dtype=object),
                      ideal_queries=np.asarray(sorted(ideal_frames)),
                      ideal=np.array([np.array(ideal_frames[k], dtype=object) for k in sorted(ideal_frames)], dtype=object))
-        rec = {"episode": ep_id, "trial_id": (episode.metadata or {}).get("trial_id"), "objects": episode.objects, "condition": args.condition,
+        rec = {"episode": ep_id, "trial_id": (episode.metadata or {}).get("trial_id"), "objects": episode.objects, "condition": args.run_tag or args.condition,
                "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
                "wall_s": time.time() - t_ep, "inference_wall_s": t_inf, "replay": do_replay}
         with summary_path.open("a") as f:
@@ -387,6 +397,6 @@ if __name__ == "__main__":
         import traceback
 
         traceback.print_exc()
-        app.close()
-        sys.exit(1)
+        sys.stdout.flush()
+        os._exit(1)  # app.close() can hang after a failure inside the loop
     app.close()

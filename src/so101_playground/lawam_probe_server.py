@@ -51,7 +51,7 @@ from lerobot.policies.lawam.modeling_lawam import LaWAMPolicy
 
 IMAGE_PREFIX = "observation.images."
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", force=True)
 log = logging.getLogger("lawam.probe.server")
 
 
@@ -129,6 +129,7 @@ class Probe:
         if trace is not None and self._last_shared is not None:
             s = self._last_shared
             key = (int(trace["episode"]), int(trace["frame"]))
+            self.memory.pop(key, None)  # re-insert at the end: eviction is by insertion order
             self.memory[key] = {
                 "h_t": s.h_t.detach().float().clone(),
                 "h_t1_pred": s.h_t1_pred.detach().float().clone(),
@@ -136,11 +137,8 @@ class Probe:
                 "primary_image": batch["primary_image"].detach().clone(),
                 "embodiment_id": batch["embodiment_id"].detach().clone(),
             }
-            ep_keys = sorted(k for k in self.memory if k[0] == key[0])
-            for old in ep_keys[: -self.keep]:
-                del self.memory[old]
-            for old in [k for k in self.memory if k[0] < key[0] - 1]:
-                del self.memory[old]
+            while len(self.memory) > self.keep:  # oldest requests first (runs reuse episode ids)
+                del self.memory[next(iter(self.memory))]
         return actions.float().cpu().numpy()
 
     @torch.inference_mode()
@@ -246,7 +244,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--log_dir", required=True)
-    parser.add_argument("--keep", type=int, default=4, help="Stored queries per episode.")
+    parser.add_argument("--keep", type=int, default=4, help="Most recent queries kept for scoring.")
     args = parser.parse_args()
     camera_map = dict(pair.split("=", 1) for pair in args.camera_map.split(","))
     probe = Probe(checkpoint=args.repo_id, device=args.device, camera_map=camera_map,

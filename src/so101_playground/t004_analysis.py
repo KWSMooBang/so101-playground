@@ -2,8 +2,8 @@
 """T004 analysis: per-condition success, e_track, e_pred, e_ideal (RESEARCH.md H2-P0).
 
 Inputs per run dir ``<root>/<model>/<condition>/``: ``episodes.jsonl`` and ``ep*.npz`` from
-scripts/wam_gap_eval.py, plus ``lam_scores.jsonl`` (LaWAM; written by lawam_probe_server.py into the server's
-log dir, which the runner points at the run dir) or ``flux_metrics.jsonl`` (FLUX; flux_pixel_metrics.py).
+scripts/wam_gap_eval.py, plus ``<root>/<model>/lam_scores.jsonl`` (LaWAM; lawam_probe_server.py's log, rows
+tagged with the condition) or ``flux_metrics.jsonl`` (FLUX; flux_pixel_metrics.py).
 
 Definitions
   e_track       mean |cmd(t) - q(t+1)| over the five arm joints and all policy-controlled ticks, deg.
@@ -72,8 +72,9 @@ def episodes_stats(run: Path) -> dict:
 
 
 def lawam_stats(run: Path, per_query_track: dict) -> dict:
-    p = run / "lam_scores.jsonl"
+    p = run.parent / "lam_scores.jsonl"  # one server log for all conditions, rows tagged by condition
     rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+    rows = [r for r in rows if r.get("condition") == run.name and r["episode"] >= 0]
     obs = {(r["episode"], r["frame"]): r for r in rows if r["kind"] == "observed"}
     ide = {(r["episode"], r["frame"]): r for r in rows if r["kind"] == "ideal"}
     out = {"n_obs_scores": len(obs), "n_ideal_scores": len(ide)}
