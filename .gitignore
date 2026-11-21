@@ -20,3 +20,8 @@ trackio/
 .claude/
 .vscode/
 .DS_Store
+
+# T004: flux-action checkout, model weights, download logs
+envs/flux3/flux-action/
+envs/*/weights/
+envs/*/*.log

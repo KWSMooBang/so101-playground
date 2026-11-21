@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""SO-101 Bench sim rollouts of a WAM policy server with an injected control gap (T004, RESEARCH.md H2-P0).
+
+Run from the isaac env (source envs/isaac/env.sh of the checkout that holds the venv). A lean version of
+so101_bench ``scripts/molmoact2_eval.py`` (same env construction, reset, initial hold, policy client
+``MolmoAct2RemotePolicy`` and success bookkeeping) with three additions; the bench is not edited:
+
+1. Control gap (``so101_playground.control_gap``): ``--condition none|gain|latency|offset|backlash``.
+   The policy's command ``cmd`` (sim radians, after the client's 15 deg/tick clamp) goes through the
+   gap before ``env.step``; the gain gap edits the actuator cfg before the env is built.
+2. Per-tick log per episode (``<out>/ep<e>.npz``): cmd, applied target, measured joint position after
+   the step, query ticks, the policy chunk of each query.
+3. Prediction targets:
+   * ``--model lawam``: 35 ticks after each query (LaWAM's LAM horizon) the observed overhead+wrist frame
+     is sent to the server's ``/lam_score`` (kind=observed).
+   * ``--model flux3``: the observed scene|wrist canvas (256x512, FLUX's side_by_side resize) of every
+     tick is stored as JPEG (q95) in ``<out>/frames_ep<e>.npz`` for offline pixel/feature metrics.
+   * ``--replay_episodes N``: for the first N episodes, at every query the scene is snapshotted, the
+     policy chunk is executed with perfect tracking (joint positions written each control tick, PD target
+     = command, objects simulated normally), the replay frames are kept / scored (kind=ideal), and the
+     snapshot is restored before the real rollout continues.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import io
+import json
+import math
+from pathlib import Path
+import random
+import sys
+import time
+
+from isaaclab.app import AppLauncher
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "src"))
+
+parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+parser.add_argument("--task", default="So101Bench-Bin-v0")
+parser.add_argument("--model", choices=["lawam", "flux3"], required=True)
+parser.add_argument("--condition", default="none")
+parser.add_argument("--episodes_jsonl", type=Path, required=True)
+parser.add_argument("--layouts_jsonl", type=Path, required=True)
+parser.add_argument("--num_episodes", type=int, default=None)
+parser.add_argument("--episode_offset", type=int, default=0)
+parser.add_argument("--out_dir", type=Path, required=True)
+parser.add_argument("--seed", type=int, default=1984)
+parser.add_argument("--policy_host", default="127.0.0.1")
+parser.add_argument("--policy_port", type=int, default=8000)
+parser.add_argument("--action_horizon", type=int, default=None)
+parser.add_argument("--history_ticks", type=int, default=None)
+parser.add_argument("--replay_episodes", type=int, default=0)
+parser.add_argument("--replay_ticks", type=int, default=None, help="Ticks per replay branch (default per model).")
+parser.add_argument("--lam_horizon", type=int, default=35)
+parser.add_argument("--max_ticks", type=int, default=None, help="Optional cap on control ticks per episode.")
+parser.add_argument("--initial_hold_time_s", type=float, default=1.5)
+AppLauncher.add_app_launcher_args(parser)
+args = parser.parse_args()
+args.enable_cameras = True
+if args.headless and not getattr(args, "experience", ""):
+    args.experience = "isaaclab.python.rendering.kit"  # as molmoact2_eval.py
+MODEL_DEFAULTS = {"lawam": dict(action_horizon=36, history_ticks=1, replay_ticks=36),
+                  "flux3": dict(action_horizon=32, history_ticks=8, replay_ticks=41)}
+for k, v in MODEL_DEFAULTS[args.model].items():
+    if getattr(args, k) is None:
+        setattr(args, k, v)
+
+app = AppLauncher(args).app
+
+import gymnasium as gym  # noqa: E402
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+from PIL import Image  # noqa: E402
+from urllib import request  # noqa: E402
+
+import isaaclab_tasks  # noqa: E402,F401
+from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
+
+import so101_bench.tasks  # noqa: E402,F401
+from so101_bench.benchmark import OBJECT_SPLITS, episode_is_executable, load_episode_jsonl  # noqa: E402
+from so101_bench.layouts import normalize_layout_object_slots  # noqa: E402
+from so101_bench.mdp import mark_benchmark_robot_start  # noqa: E402
+from so101_bench.tasks.direct.so101_bench.so101_bench_env_cfg import configure_env_cfg_for_object_pool  # noqa: E402
+from so101_bench.utils.lerobot_calibration import LEROBOT_INITIAL_JOINT_POS, lerobot_pose_to_sim_joint_pos  # noqa: E402
+from so101_bench.utils.molmoact2 import MolmoAct2RemotePolicy  # noqa: E402
+
+from so101_playground.control_gap import CONDITIONS, JOINT_NAMES, CommandGap, apply_actuator_gap  # noqa: E402
+
+INITIAL = lerobot_pose_to_sim_joint_pos(LEROBOT_INITIAL_JOINT_POS)
+
+
+# ---------------------------------------------------------------- episode plumbing (as molmoact2_eval.py)
+def _object_info(name: str) -> dict:
+    for split in OBJECT_SPLITS.values():
+        if name in split:
+            return split[name]
+    return {}
+
+
+def _reset_params(episode, layout, pool, asset_names):
+    idx = {n: i for i, n in enumerate(pool)}
+    payload = episode.reset_payload()
+    local = [idx[n] for n in episode.objects]
+    payload["active_object_ids"] = local
+    payload["target_object_id"] = local[episode.target_object_id]
+    payload["referent_object_ids"] = [local[i] for i in episode.referent_object_ids]
+    remapped = dict(layout)
+    objs = []
+    for entry in layout.get("objects", []):
+        e = dict(entry)
+        slot = idx[str(e.get("name") or episode.objects[int(e["slot"])])]
+        e["slot"], e["asset_name"] = slot, f"object_{slot + 1}"
+        objs.append(e)
+    remapped["objects"] = objs
+    return {"object_asset_names": asset_names, "object_labels": pool, "task_family": episode.task_family,
+            "object_count_range": (len(episode.objects), len(episode.objects)), "active_object_selection": "fixed",
+            "fixed_active_object_ids": tuple(payload["active_object_ids"]), "shuffle_object_labels": False,
+            "force_bin_all_objects_instruction": False, "episode_spec": payload, "episode_layout": remapped}
+
+
+def _reset_env(env):
+    with torch.inference_mode(False):
+        env.reset()
+        u = env.unwrapped
+        robot = u.scene["robot"]
+        ids = [robot.joint_names.index(j) for j in JOINT_NAMES]
+        q = _hold(u).unsqueeze(0)
+        robot.data.default_joint_pos[:, ids] = q
+        robot.data.default_joint_vel[:, ids] = 0.0
+        robot.write_joint_state_to_sim(q, torch.zeros_like(q), joint_ids=ids)
+        robot.set_joint_position_target(q, joint_ids=ids)
+        robot.write_data_to_sim()
+        u.scene.write_data_to_sim()
+        u.sim.forward()
+        for _ in range(getattr(u.cfg, "num_rerenders_on_reset", 0) if u.sim.has_rtx_sensors() else 0):
+            u.sim.render()
+        obs = u.observation_manager.compute(update_history=True)
+        u.obs_buf = obs
+        return obs
+
+
+def _hold(u) -> torch.Tensor:
+    return torch.tensor([INITIAL[j] for j in JOINT_NAMES], dtype=torch.float32, device=u.device)
+
+
+# ---------------------------------------------------------------- frames
+def _rgb(visual: dict, cam: str) -> torch.Tensor:
+    img = visual[f"rgb_{cam}"][0]
+    if img.shape[-1] == 4:
+        img = img[..., :3]
+    return img
+
+
+def _canvas(visual: dict) -> np.ndarray:
+    """FLUX side_by_side canvas: scene(overhead) | wrist, each bilinear+antialias to 256x256 (flux-action packing)."""
+    cells = []
+    for cam in ("overhead", "wrist"):
+        x = _rgb(visual, cam).permute(2, 0, 1)[None].float()
+        x = F.interpolate(x, size=(256, 256), mode="bilinear", align_corners=False, antialias=True)
+        cells.append(x)
+    out = torch.cat(cells, dim=-1)[0].permute(1, 2, 0).round().clamp(0, 255).to(torch.uint8)
+    return out.cpu().numpy()
+
+
+def _jpeg(a: np.ndarray) -> bytes:
+    b = io.BytesIO()
+    Image.fromarray(a).save(b, format="JPEG", quality=95)
+    return b.getvalue()
+
+
+def _png_b64(a: np.ndarray) -> str:
+    b = io.BytesIO()
+    Image.fromarray(a).save(b, format="PNG")
+    return base64.b64encode(b.getvalue()).decode("ascii")
+
+
+def _policy_frame(policy: MolmoAct2RemotePolicy, visual: dict, cam: str) -> np.ndarray:
+    return policy._camera_frame(visual, cam)  # same uint8 + resize path the policy request uses
+
+
+def _post(port: int, path: str, payload: dict) -> dict:
+    req = request.Request(f"http://{args.policy_host}:{port}{path}", data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json"})
+    with request.urlopen(req, timeout=300) as r:
+        return json.loads(r.read())
+
+
+# ---------------------------------------------------------------- ideal (kinematic) replay branch
+def replay_branch(env, targets: list[torch.Tensor], capture: set[int]) -> dict[int, dict]:
+    """Execute ``targets`` with perfect tracking from the current state; return visual obs after tick j
+    (j = 1..len) for j in ``capture``. The scene is restored afterwards."""
+    u = env.unwrapped
+    scene, robot = u.scene, u.scene["robot"]
+    ids = [robot.joint_names.index(j) for j in JOINT_NAMES]
+    with torch.inference_mode(False):
+        state = scene.get_state(is_relative=False)
+        saved_target = robot.data.joint_pos_target.clone()
+        out = {}
+        zeros = torch.zeros((1, len(ids)), device=u.device)
+        for j, tgt in enumerate(targets, start=1):
+            q = tgt.reshape(1, -1).to(u.device)
+            robot.write_joint_state_to_sim(q, zeros, joint_ids=ids)
+            robot.set_joint_position_target(q, joint_ids=ids)
+            for sub in range(u.cfg.decimation):
+                scene.write_data_to_sim()
+                u.sim.step(render=False)
+                if sub == u.cfg.decimation - 1:
+                    u.sim.render()
+                scene.update(dt=u.physics_dt)
+            if j in capture:
+                vis = u.observation_manager.compute_group("visual")
+                out[j] = {k: v.clone() for k, v in vis.items()}
+        scene.reset_to(state, is_relative=False)
+        robot.set_joint_position_target(saved_target)
+        scene.write_data_to_sim()
+        u.sim.forward()
+    return out
+
+
+# ---------------------------------------------------------------- main
+def main() -> None:
+    gap_cfg = CONDITIONS[args.condition]
+    out = args.out_dir
+    out.mkdir(parents=True, exist_ok=True)
+    episodes = [e for e in load_episode_jsonl(args.episodes_jsonl) if episode_is_executable(e)]
+    episodes = episodes[args.episode_offset:]
+    if args.num_episodes is not None:
+        episodes = episodes[: args.num_episodes]
+    layouts_by_id = {}
+    for line in args.layouts_jsonl.read_text().splitlines():
+        if line.strip():
+            row = json.loads(line)
+            layouts_by_id[str(row["trial_id"])] = row
+    layouts = [normalize_layout_object_slots(layouts_by_id[str((e.metadata or {}).get("trial_id", i))], e.objects, episode_index=i)
+               for i, e in enumerate(episodes)]
+    pool = []
+    for e in episodes:
+        pool += [o for o in e.objects if o not in pool]
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=1)
+    env_cfg.seed = args.seed
+    env_cfg.scene.robot.init_state.joint_pos = dict(INITIAL)
+    stiffness = apply_actuator_gap(env_cfg, gap_cfg)
+    asset_names = configure_env_cfg_for_object_pool(env_cfg, pool)
+    env_cfg.events.reset_benchmark_scene.params.update(_reset_params(episodes[0], layouts[0], pool, asset_names))
+    t0 = time.time()
+    env = gym.make(args.task, cfg=env_cfg)
+    u = env.unwrapped
+    control_dt = float(u.step_dt)
+    hold_steps = max(0, math.ceil(args.initial_hold_time_s / control_dt))
+    cameras = {k.replace("camera_", ""): {} for k in u.scene.keys() if k.startswith("camera_")}
+    print(f"[T004] env ready in {time.time() - t0:.1f}s; control_dt={control_dt:.4f}; stiffness={stiffness}", flush=True)
+
+    policy = MolmoAct2RemotePolicy(
+        device=u.device, cameras=cameras, host=args.policy_host, port=args.policy_port,
+        action_horizon=args.action_horizon, camera_names=["overhead", "wrist"], image_size=(640, 480),
+        max_joint_step_deg=15.0, joint_frame="lerobot", history_ticks=args.history_ticks,
+        prediction_trace_dir=str(out),
+    )
+    policy.connect()
+    last_chunk = {}
+    _orig_query = policy._query_server
+
+    def _query(jp, vis):
+        chunk = _orig_query(jp, vis)
+        last_chunk["chunk"] = chunk
+        return chunk
+
+    policy._query_server = _query
+    gap = CommandGap(gap_cfg, u.device)
+    robot = u.scene["robot"]
+    ids = [robot.joint_names.index(j) for j in JOINT_NAMES]
+    summary_path = out / "episodes.jsonl"
+    done_eps = set()
+    if summary_path.exists():
+        done_eps = {json.loads(l)["episode"] for l in summary_path.read_text().splitlines() if l.strip()}
+
+    for ei, (episode, layout) in enumerate(zip(episodes, layouts)):
+        ep_id = ei + args.episode_offset
+        if ep_id in done_eps:
+            continue
+        params = _reset_params(episode, layout, pool, asset_names)
+        u.cfg.events.reset_benchmark_scene.params.update(params)
+        u.event_manager.get_term_cfg("reset_benchmark_scene").params.update(params)
+        obs = _reset_env(env)
+        instruction = getattr(u, "so101_bench_instruction", "") or "Place each object in the plastic bin"
+        policy.set_language_instruction(instruction)
+        policy.reset()
+        hold = _hold(u)
+        do_replay = ei < args.replay_episodes
+        log = {k: [] for k in ("cmd", "applied", "q", "tick")}
+        queries, chunks, pending, frames, ideal_frames = [], [], {}, [], {}
+        started = False
+        step = 0
+        success, reason = False, "unknown"
+        t_ep = time.time()
+        t_inf = 0.0
+        while app.is_running():
+            if step < hold_steps:
+                cmd = hold.clone()
+            else:
+                if not started:
+                    mark_benchmark_robot_start(u, object_asset_names=asset_names, bin_name="plastic_bin",
+                                               force_robot_start_time=True)
+                    policy.set_episode_initial_observation(obs["visual"])
+                    gap.reset(hold)
+                    started = True
+                policy.trace_episode, policy.trace_frame = ep_id, step
+                need_query = not policy.action_queue
+                ti = time.time()
+                with torch.inference_mode():
+                    jp = obs["policy"]["joint_pos_obs"][0].clone()
+                    cmd = policy.get_action(jp, obs["visual"]).clone()
+                if need_query:
+                    t_inf += time.time() - ti
+                    chunk = np.asarray(last_chunk["chunk"], dtype=np.float32)
+                    queries.append(step)
+                    chunks.append(chunk)
+                    if args.model == "lawam":
+                        pending[step + args.lam_horizon] = step
+                    if do_replay:
+                        tgts = [policy.mapper.model_positions_to_sim_radians(
+                            torch.as_tensor(row, device=u.device)) for row in chunk[: args.replay_ticks]]
+                        capture = {args.lam_horizon} if args.model == "lawam" else set(range(1, len(tgts) + 1))
+                        branch = replay_branch(env, tgts, capture)
+                        if args.model == "lawam" and args.lam_horizon in branch:
+                            vis = branch[args.lam_horizon]
+                            _post(args.policy_port, "/lam_score", {
+                                "episode": ep_id, "frame": step, "kind": "ideal", "condition": args.condition,
+                                "obs_frame": step + args.lam_horizon, "camera_names": ["overhead", "wrist"],
+                                "images_png_base64": [_png_b64(_policy_frame(policy, vis, c)) for c in ("overhead", "wrist")]})
+                        elif args.model == "flux3":
+                            ideal_frames[step] = [_jpeg(_canvas(branch[j])) for j in sorted(branch)]
+            applied = gap(cmd) if started else cmd
+            obs, _r, terminated, truncated, info = env.step(applied.unsqueeze(0))
+            step += 1
+            log["cmd"].append(cmd.cpu().numpy())
+            log["applied"].append(applied.cpu().numpy())
+            log["q"].append(robot.data.joint_pos[0, ids].cpu().numpy())
+            log["tick"].append(step)
+            if args.model == "flux3":
+                frames.append(_jpeg(_canvas(obs["visual"])))
+            ended = bool(terminated.any() or truncated.any())
+            if args.model == "lawam" and step in pending and not ended:
+                qs = pending.pop(step)
+                _post(args.policy_port, "/lam_score", {
+                    "episode": ep_id, "frame": qs, "kind": "observed", "condition": args.condition, "obs_frame": step,
+                    "camera_names": ["overhead", "wrist"],
+                    "images_png_base64": [_png_b64(_policy_frame(policy, obs["visual"], c)) for c in ("overhead", "wrist")]})
+            if ended:
+                term = info.get("log", {})
+                success = bool(term.get("Episode_Termination/success", 0.0) > 0.0)
+                reason = "success" if success else ("time_out" if bool(truncated.any()) else "failure")
+                break
+            if args.max_ticks is not None and step >= args.max_ticks:
+                reason = "max_ticks"
+                break
+        np.savez_compressed(
+            out / f"ep{ep_id:03d}.npz", hold_steps=hold_steps,
+            **{k: np.asarray(v) for k, v in log.items()}, queries=np.asarray(queries),
+            chunks=np.asarray(chunks) if chunks else np.zeros((0,)))
+        if args.model == "flux3":
+            np.savez(out / f"frames_ep{ep_id:03d}.npz", observed=np.array(frames, dtype=object),
+                     ideal_queries=np.asarray(sorted(ideal_frames)),
+                     ideal=np.array([np.array(ideal_frames[k], dtype=object) for k in sorted(ideal_frames)], dtype=object))
+        rec = {"episode": ep_id, "trial_id": (episode.metadata or {}).get("trial_id"), "objects": episode.objects, "condition": args.condition,
+               "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
+               "wall_s": time.time() - t_ep, "inference_wall_s": t_inf, "replay": do_replay}
+        with summary_path.open("a") as f:
+            f.write(json.dumps(rec) + "\n")
+        print(f"[T004] {json.dumps(rec)}", flush=True)
+    env.close()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+        app.close()
+        sys.exit(1)
+    app.close()
