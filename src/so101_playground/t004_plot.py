@@ -43,8 +43,15 @@ def main() -> None:
                    edgecolors=SURFACE, linewidths=2, label="e_pred: prediction vs observed")
         ax.scatter([r[1] for r in rows], [r[3] for r in rows], s=64, color=ORANGE, marker="s", zorder=3,
                    edgecolors=SURFACE, linewidths=2, label="e_ideal: prediction vs perfect-tracking replay")
-        for c, x, yp, _ in rows:
-            ax.annotate(c, (x, yp), xytext=(6, 4), textcoords="offset points", fontsize=9, color=INK2)
+        # Direct labels; nudge a label below its point when it would collide with one already placed.
+        xr = max(r[1] for r in rows) - min(r[1] for r in rows) or 1.0
+        yr = max(r[2] for r in rows) - min(r[2] for r in rows) or 1.0
+        placed = []
+        for c, x, yp, _ in sorted(rows, key=lambda r: r[2], reverse=True):
+            clash = any(abs(x - px) < 0.12 * xr and abs(yp - py) < 0.06 * yr for px, py in placed)
+            ax.annotate(c, (x, yp), xytext=(6, -13) if clash else (6, 4), textcoords="offset points",
+                        fontsize=9, color=INK2)
+            placed.append((x, yp))
         ax.set_title(title, fontsize=11, color=INK, loc="left")
         ax.set_xlabel("e_track: mean |command - joint| (deg)", fontsize=10, color=INK2)
         ax.set_ylabel("distance (lower = better prediction)", fontsize=10, color=INK2)
