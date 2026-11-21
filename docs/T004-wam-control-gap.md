@@ -65,11 +65,10 @@ LaWAM (latent, its own training loss):
 
 - **e_pred** = `mse(h_t1_pred, LAM(observed overhead frame after s+35 env steps))`, the training loss in
   rollout. Also logged: 1 − token cosine.
-- **e_ideal** = the same distance against a **kinematic replay**. At query s the whole scene is snapshotted
-  (`scene.get_state`); the chunk is executed with perfect tracking (joint positions written each control tick,
-  PD target = command, zero velocity, objects simulated, every tick rendered as `env.step` does); the frame after
-  35 ticks is scored; the scene is restored. This runs on every 2nd query of every episode.
-  `e_pred@35_paired` and `e_ideal@35_paired` use exactly the same queries.
+- **e_ideal / d_nominal** = the same distance against a **replay** of the chunk from a scene snapshot taken at
+  query s (every 2nd query): `--replay_mode teleport` (perfect tracking) or `nominal` (fault-free PD arm). See
+  "Review corrections" in Results for the exact procedure; the first sweep's replay is invalid.
+  `e_pred@35_paired` (= d_fault) and the replay distance use exactly the same queries.
 - **e_static** = `mse(h_t, LAM(observed s+35))`: how much the scene changed. This is the "predict no motion"
   baseline, for scale.
 - **e_track** = mean |cmd(t) − q(t+1)| over the five arm joints and all policy ticks (deg), with cmd before the
@@ -98,99 +97,134 @@ every tick.
 
 ## Results
 
-Figure: `/outputs/so101-playground/runs/T004/T004_pred_vs_track.png`.
+Figure: `/outputs/so101-playground/runs/T004/T004_pred_vs_track.png`. Left: LaWAM, nominal replay. Right: FLUX
+e_pred only.
 
-Videos:
-- LaWAM: `runs/T004/lawam_videos/T004-<cond>.mp4` for none/gain/latency/offset/latency6. Observed | ideal
-  canvases, plus PCA-RGB maps of h_t1_pred / LAM(observed) / LAM(ideal) with one PCA basis shared per episode.
-  Episode 0, first 360 ticks, replay at every query.
-- FLUX: `runs/T004/flux3_videos/T004-flux3-<cond>.mp4` for all 7 FLUX conditions. Rows are predicted / observed /
-  ideal for j = 1..31. Episode 0, first 8 replayed queries.
+Videos (made with the pre-review replay; their "ideal" rows show the old teleport replay):
+- `runs/T004/lawam_videos/T004-<cond>.mp4`
+- `runs/T004/flux3_videos/T004-flux3-<cond>.mp4`
 
-### LaWAM (8 episodes per condition; distance = LAM token MSE at +35 ticks)
+### Review corrections (2026-11-21)
 
-| cond | success | e_track ° | e_pred | Δ vs none [95% CI] | e_pred (paired) | e_ideal (paired) | obs−ideal [95% CI] | ρ(e_pred, e_track) |
-|---|---|---|---|---|---|---|---|---|
-| none | 7/8 | 0.67 | 0.0739 | — | 0.0658 | 0.0724 | −0.0066 [−0.0117, −0.0024] | 0.35 |
-| gain | 8/8 | 1.37 | 0.0782 | +0.0034 [−0.0019, 0.0084] | 0.0692 | 0.0745 | −0.0053 [−0.0083, −0.0026] | 0.35 |
-| latency | 7/8 | 1.64 | 0.0833 | +0.0069 [−0.0015, 0.0165] | 0.0794 | 0.0787 | +0.0006 [−0.0084, 0.0072] | 0.56 |
-| offset | 5/8 | 1.52 | 0.0889 | +0.0147 [−0.0048, 0.0366] | 0.0904 | 0.0871 | +0.0033 [−0.0083, 0.0133] | 0.62 |
-| backlash | 7/8 | 1.24 | 0.0764 | +0.0008 [−0.0065, 0.0076] | 0.0746 | 0.0781 | −0.0035 [−0.0069, −0.0002] | 0.39 |
-| gain2 | 7/8 | 2.31 | 0.0982 | +0.0213 [0.0039, 0.0417] | 0.0949 | 0.0896 | +0.0053 [−0.0056, 0.0170] | 0.43 |
-| latency6 | 7/8 | 2.37 | 0.0984 | +0.0246 [0.0171, 0.0327] | 0.0931 | 0.0836 | +0.0095 [0.0042, 0.0172] | 0.55 |
-| offset6 | 1/8 | 2.06 | 0.0798 | +0.0061 [−0.0016, 0.0151] | 0.0790 | 0.0779 | +0.0011 [−0.0069, 0.0071] | 0.56 |
+Every mean below is query-weighted, every Δ vs none is the difference of query-weighted means, and every CI is a
+95% bootstrap over episodes, episode-paired for Δ (review #7).
 
-- e_static, the no-motion baseline, is 0.09–0.16 in every condition.
-- Across the 8 condition means, r(e_track, e_pred) = 0.83 and r(e_track, obs−ideal) = 0.89. Without offset6 they
-  are 0.95 and 0.91; offset6 failed 7/8 episodes, so its states are degenerate.
-- e_exec from the video pass (LAM distance, observed vs ideal at +35; episode 0, 8 queries): none 0.014,
-  gain 0.028, latency 0.032, offset 0.063, latency6 0.068.
+A code review found four problems in the first sweep's ideal replay:
+- **#2:** the replay bypassed the client's 15°/tick clamp. The clamp is active on 8–62% of ticks, mostly
+  triggered by a blocked gripper, which scales the whole arm command back.
+- **#3:** in the gain conditions the replay kept the reduced stiffness.
+- **#4:** the replay's frames stayed in the RTX temporal history. FLUX's first observed frames after a replay
+  were worse (wrist LPIPS +0.03–0.06 at j=1, mostly gone by j=8). LaWAM is unaffected (it scores 35 renders later).
+- **#5:** one post-termination frame per condition at most entered the FLUX scores.
 
-So the gap is clearly visible in LAM space, but it is small next to the prediction error itself (~0.07–0.10).
+So **e_ideal, observed−ideal and FLUX e_exec of the first sweep (`runs/T004`) are invalid** and are marked
+`invalid` in results.tsv. e_pred, e_track, success and Δ vs none do not depend on the replay and stand. #5
+(terminal frame) and @40 were also dropped from the FLUX metrics, which were then recomputed.
 
-### FLUX 3 Action (8 episodes per condition; offset6 not run)
+Two corrected baselines were then run for LaWAM. Both replay the commands the policy actually issued (after the
+clamp, before the gap) from a scene snapshot taken at the query tick. The replay runs at the end of the chunk,
+gains are restored afterwards, and the restored scene is re-rendered 3× before the rollout continues.
+- **v2, teleport** (`runs/T004_v2`, none/gain/gain2/latency6 × 8 ep): the arm is placed on the command at every
+  physics substep, i.e. perfect tracking. The jaw tracks through nominal PD.
+- **nominal** (`runs/T004_nominal`, decision 2026-11-21): the same commands on a fault-free arm. All joints run
+  through the nominal PD drives, as the training data was recorded, with no teleport, delay, offset or backlash.
+  The run covers none and latency6 × 8 ep and gain2 × 4 ep. The 10.8 GPU-h cap was reached when GPU 1 slowed down
+  next to an external process, so gain was not run.
 
-| cond | success | e_track ° | DINO scene@16 e_pred | Δ vs none [CI] | e_ideal (paired) | e_exec | LPIPS wrist@16 e_pred | Δ vs none [CI] | e_ideal (paired) | e_exec |
+The nominal comparison answers the H2 question directly. d_fault = d(prediction, the gap arm's actual
+future), d_nominal = d(prediction, a fault-free arm given the same commands). A positive d_fault − d_nominal
+means the prediction is closer to what a fault-free arm would have done.
+
+### LaWAM, nominal replay (LAM token MSE at +35 ticks; paired queries = every 2nd query)
+
+| cond | ep | success | e_track ° | e_pred (all queries) | Δ vs none | d_fault | d_nominal | **d_fault − d_nominal** | Δ of that vs none | d(fault obs, nominal obs) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| none | 2/8 | 1.68 | 0.138 | — | 0.151 | 0.038 | 0.189 | — | 0.322 | 0.235 |
-| gain | 3/8 | 1.70 | 0.144 | +0.005 [−0.003, 0.011] | 0.155 | 0.038 | 0.231 | +0.037 [0.011, 0.061] | 0.362 | 0.291 |
-| latency | 1/8 | 1.95 | 0.144 | +0.005 [−0.002, 0.012] | 0.163 | 0.053 | 0.236 | +0.034 [−0.005, 0.074] | 0.433 | 0.361 |
-| offset | 3/8 | 1.70 | 0.146 | +0.006 [−0.001, 0.016] | 0.158 | 0.044 | 0.244 | +0.048 [0.017, 0.086] | 0.434 | 0.396 |
-| backlash | 1/8 | 2.58 | 0.143 | +0.004 [−0.000, 0.010] | 0.162 | 0.049 | 0.244 | +0.051 [0.028, 0.080] | 0.423 | 0.353 |
-| gain2 | 1/8 | 2.61 | 0.146 | +0.009 [0.001, 0.016] | 0.157 | 0.040 | 0.193 | +0.008 [−0.029, 0.043] | 0.389 | 0.342 |
-| latency6 | 1/8 | 2.66 | 0.149 | +0.011 [0.002, 0.023] | 0.170 | 0.061 | 0.260 | +0.060 [0.020, 0.100] | 0.455 | 0.405 |
+| none | 8 | 8/8 | 0.66 | 0.0753 | — | 0.0754 | 0.0769 | −0.0015 [−0.0038, −0.0001] (noise floor) | — | 0.019 [0.012, 0.031] |
+| gain2 | 4 | 1/4 | 2.20 | 0.0885 | +0.016 [−0.004, 0.030] | 0.0930 | 0.0853 | **+0.0077 [0.0022, 0.0169]** | +0.0094 [0.0035, 0.0170] | 0.054 [0.043, 0.061] |
+| latency6 | 8 | 7/8 | 2.46 | 0.0969 | +0.022 [0.010, 0.034] | 0.0946 | 0.0832 | **+0.0114 [0.0066, 0.0153]** | +0.0129 [0.0089, 0.0164] | 0.067 [0.058, 0.076] |
 
-- **e_pred < e_ideal in every condition, `none` included.** All paired obs−ideal CIs are below 0. The
-  predicted video is closer to what the PD-tracked arm actually does than to a perfect execution of the same
-  commands.
-- **e_track is a poor x-axis for FLUX.** FLUX integrates its delta actions onto the last command, so its command
-  stream leads the arm: nominal e_track is 1.68° (0.67° for LaWAM) and barely moves under gain or offset.
-- **FLUX e_pred follows e_exec, not e_track.** Across conditions, r(e_exec, e_pred) is 0.75 for wrist LPIPS and
-  0.81 for wrist L1; r(e_track, e_pred) is 0.21 and 0.10.
+- In `none` both observations should be the same, and they nearly are. d(fault obs, nominal obs) = 0.019 and
+  d_fault − d_nominal = −0.0015 give the render/physics noise floor.
+- Under the strong gaps the prediction is clearly closer to the fault-free arm's outcome: +0.008 (gain2) and
+  +0.011 (latency6), 5–8× the noise floor.
+- The gap itself moves the scene by 0.054–0.067 in LAM space, about 3× the floor.
 
-Full per-metric numbers (L1, LPIPS, DINO × scene/wrist × j = 8/16/31) are in `runs/T004/flux3/summary.json`.
+### LaWAM, teleport replay v2 (same conditions, 8 ep each)
+
+| cond | success | e_track ° | e_pred | Δ vs none | e_pred (paired) | e_ideal (teleport) | obs − ideal |
+|---|---|---|---|---|---|---|---|
+| none | 8/8 | 0.66 | 0.0720 | — | 0.0700 | 0.0788 | −0.0088 [−0.0117, −0.0059] |
+| gain | 7/8 | 1.39 | 0.0828 | +0.011 [−0.002, 0.025] | 0.0790 | 0.0871 | −0.0080 [−0.0146, −0.0017] |
+| gain2 | 4/8 | 2.23 | 0.0882 | +0.016 [0.000, 0.032] | 0.0896 | 0.0882 | +0.0013 [−0.0014, 0.0041] |
+| latency6 | 6/8 | 2.25 | 0.0937 | +0.022 [0.017, 0.027] | 0.0854 | 0.0871 | −0.0017 [−0.0089, 0.0038] |
+
+In `none` the prediction is closer to the PD-tracked arm than to a perfectly tracked one (−0.009): LaWAM has
+learned the sim's tracking lag. So "perfect tracking" is the wrong reference. Against it, the gap conditions
+only move obs − ideal from −0.009 up to ~0. The nominal replay removes that offset.
+
+### LaWAM, first sweep (8 conditions × 8 ep; e_pred side only, valid)
+
+| cond | success | e_track ° | e_pred | Δ vs none [95% CI] |
+|---|---|---|---|---|
+| none | 7/8 | 0.67 | 0.0739 | — |
+| gain | 8/8 | 1.37 | 0.0782 | +0.0044 [−0.0011, 0.0091] |
+| latency | 7/8 | 1.64 | 0.0833 | +0.0094 [−0.0005, 0.0204] |
+| offset | 5/8 | 1.52 | 0.0889 | +0.0150 [−0.0054, 0.0363] |
+| backlash | 7/8 | 1.24 | 0.0764 | +0.0025 [−0.0059, 0.0094] |
+| gain2 | 7/8 | 2.31 | 0.0982 | +0.0243 [0.0042, 0.0460] |
+| latency6 | 7/8 | 2.37 | 0.0984 | +0.0245 [0.0156, 0.0342] |
+| offset6 | 1/8 | 2.06 | 0.0798 | +0.0059 [−0.0020, 0.0153] |
+
+Across the 8 condition means, r(e_track, e_pred) = 0.83. The three runs differ in rollouts and success
+(e.g. gain2 7/8, 4/8, 1/4) because the replay and physics nondeterminism change the closed loop; that is a
+caveat on any single-condition number.
+
+### FLUX 3 Action (first sweep, 8 ep; e_pred only, ideal/exec invalid, no re-run by decision)
+
+| cond | success | e_track ° | DINO scene@16 e_pred | Δ vs none | LPIPS wrist@16 e_pred | Δ vs none |
+|---|---|---|---|---|---|---|
+| none | 2/8 | 1.68 | 0.138 | — | 0.189 | — |
+| gain | 3/8 | 1.70 | 0.144 | +0.006 [−0.003, 0.013] | 0.231 | +0.043 [0.018, 0.064] |
+| latency | 1/8 | 1.95 | 0.144 | +0.006 [−0.003, 0.013] | 0.236 | +0.047 [0.007, 0.086] |
+| offset | 3/8 | 1.70 | 0.146 | +0.008 [−0.001, 0.019] | 0.244 | +0.055 [0.023, 0.091] |
+| backlash | 1/8 | 2.58 | 0.143 | +0.005 [−0.001, 0.010] | 0.244 | +0.056 [0.029, 0.085] |
+| gain2 | 1/8 | 2.61 | 0.146 | +0.007 [−0.000, 0.014] | 0.193 | +0.004 [−0.030, 0.041] |
+| latency6 | 1/8 | 2.66 | 0.149 | +0.010 [0.000, 0.019] | 0.260 | +0.072 [0.026, 0.117] |
+
+FLUX's own success in nominal sim (2/8) is low enough that the lead has put a check of the eval harness ahead of
+any further FLUX runs. FLUX integrates its delta actions onto the last command, so its command stream leads
+the arm (nominal e_track 1.68°) and e_track barely moves under gain/offset.
 
 ### Read
 
-The future prediction does respond to an injected control gap, in both models:
-- **LaWAM:** its own training loss rises roughly in proportion to e_track across conditions (r = 0.83). The rise
-  is clear at the strong doses: gain2 +29% and latency6 +33% vs none.
-- **FLUX:** the wrist-view prediction error rises 18–32% under gain, offset, backlash and latency6.
+With the corrected baseline the H2-P0 signal is there for LaWAM. When the arm is faulty, LaWAM's prediction of
+the future is closer to what a fault-free arm would have done with the same commands than to what the faulty arm
+did: d_fault − d_nominal = +0.008 (gain2), +0.011 (latency6) vs a −0.0015 floor in `none`. The
+gap's own visual effect (d(fault obs, nominal obs) 0.05–0.07) is clearly above the floor (0.019).
 
-The effect is small next to the prediction error the models carry anyway. At the mild doses (3°, 100 ms, ×0.5)
-it cannot be separated from none with 8 episodes, except in the FLUX wrist view.
+So "predicted future vs observed future" carries information about the control gap, and the right reward
+for P1 is the paired difference against a nominal reference, not raw e_pred. Raw e_pred also rises (Δ +0.02 at
+the strong doses), but it is confounded by the state distribution: the gap changes where the closed loop goes.
 
-e_ideal does not stay at the none level; it rises with the gap too:
-- the closed loop visits different states under a gap (offset and offset6 also cut success);
-- for FLUX, e_ideal sits far above e_pred because the model has learned the sim's tracking lag.
-
-The cleaner signal is LaWAM's paired obs−ideal difference. It moves from −0.007 (none) to +0.010 (latency6): under
-a strong gap the observed outcome becomes worse-predicted than the perfectly executed one.
-
-For P1 this suggests:
-- reward on (e_pred − e_ideal), or on e_pred normalized per state, rather than raw e_pred;
-- test at gap sizes at least as large as the strong doses here, or with more than 8 episodes.
-
-Caveats:
-- 8 episodes per cell.
-- FLUX succeeds rarely (1–3/8), so most FLUX queries come from failing rollouts.
-- e_ideal replays every 2nd query only.
-- The ideal replay teleports joints. It is "perfect tracking of the command", not "the arm the model saw in
-  training".
-- FLUX frames are compared after JPEG/H.264 coding.
-- FLUX's lag sweep hints the prediction may lead the bench alignment by 1–2 ticks on the wrist.
+Limits:
+- Only the strong doses were tested with the nominal baseline. The mild doses (3°, 100 ms, ×0.5) moved raw e_pred
+  by amounts inside the CI with 8 episodes.
+- gain2 has 4 episodes.
+- The effect is ~10–15% of the prediction error itself, so a per-query reward will be noisy.
+- FLUX is not re-evaluated.
 
 ## Compute
 
 | use | window | GPU-h |
 |---|---|---|
-| GPU 1: LaWAM server + Isaac | 16:43–20:50 | 4.1 |
-| GPU 0: FLUX server | 19:33–22:28 | 2.9 |
-| GPU 1: FLUX-only Isaac | 20:50–22:27 | 1.6 |
-| **Total** | | **≈ 8.7** (cap 10) |
+| first sweep (LaWAM GPU 1 16:43–20:50; FLUX GPU 0 19:33–22:28 + GPU 1 20:50–22:27) | | 8.65 |
+| FLUX metric recompute | | ~0.05 |
+| v2 teleport: smoke + 4 conditions | 22:40–23:30 | 0.83 |
+| nominal: smoke + none, latency6, gain2 (4 ep) | 23:31–00:43 | 1.2 |
+| **T004 total** | | **≈ 10.8** (cap raised to 10.8 by human decision) |
 
-Up to three Isaac clients (~6.4 GB each) shared GPU 1 against one policy server. Two attempts OOM'd when a
-fourth process started on GPU 1; those runs were redone.
+During the nominal run a 3.1 GB process outside T004 on GPU 1 caused one OOM at Isaac startup (gain; re-queued,
+then cut at the cap) and slowed episodes about 3×.
 
 ## Reproduce
 
@@ -201,6 +235,9 @@ HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=1 envs/lawam/.venv/bin/python src/so101_pl
     --repo_id envs/lawam/weights/so101_bench_LaWAM --port 18800 --log_dir /outputs/so101-playground/runs/T004/lawam
 GPU=1 scripts/run_t004_sweep.sh lawam 18800 /outputs/so101-playground/runs/T004 none,gain,latency,offset,backlash,gain2,latency6,offset6 8 8 --replay_every 2
 GPU=1 scripts/run_t004_videos.sh 18800 /outputs/so101-playground/runs/T004 none,gain,latency,offset,latency6 360
+# corrected baselines (server --log_dir runs/T004_v2/lawam or runs/T004_nominal/lawam)
+GPU=1 scripts/run_t004_sweep.sh lawam 18800 /outputs/so101-playground/runs/T004_v2 none,gain,gain2,latency6 8 8 --replay_every 2 --replay_mode teleport
+GPU=1 scripts/run_t004_sweep.sh lawam 18800 /outputs/so101-playground/runs/T004_nominal none,latency6,gain2,gain 8 8 --replay_every 2 --replay_mode nominal
 
 # FLUX 3 Action (both black-forest-labs licenses must be accepted on the Hub)
 envs/flux3/setup_flux3.sh
@@ -215,5 +252,5 @@ envs/flux3/flux-action/.venv/bin/python src/so101_playground/t004_flux_videos.py
 # analysis, results.tsv rows, figure
 envs/flux3/flux-action/.venv/bin/python src/so101_playground/t004_analysis.py --root /outputs/so101-playground/runs/T004 \
     --model lawam --tsv /outputs/so101-playground/results.tsv      # and --model flux3
-envs/flux3/flux-action/.venv/bin/python src/so101_playground/t004_plot.py /outputs/so101-playground/runs/T004 out.png
+envs/flux3/flux-action/.venv/bin/python src/so101_playground/t004_plot.py /outputs/so101-playground/runs/T004 /outputs/so101-playground/runs/T004_nominal out.png
 ```

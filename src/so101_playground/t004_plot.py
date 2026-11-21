@@ -5,7 +5,7 @@
 Per condition: e_pred (prediction vs observed future) and e_ideal (prediction vs perfect-tracking replay),
 both on the same replayed queries, plotted against e_track (mean |cmd - q| over arm joints, deg).
 
-  t004_plot.py ROOT_V1 ROOT_V2 OUT.png   (ROOT_V1 = runs/T004, ROOT_V2 = runs/T004_v2)
+  t004_plot.py ROOT_V1 ROOT_V2 OUT.png   (ROOT_V1 = runs/T004, ROOT_V2 = runs/T004_nominal)
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ INK, INK2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 # (summary root key, model, title, e_pred key, e_ideal key or None). e_ideal is drawn only from runs made with the
 # post-review replay (T004_v2); FLUX's replay values are invalid and it shows e_pred over all queries.
 PANELS = [
-    ("v2", "lawam", "LaWAM: LAM DINOv3 token MSE at +35 ticks (replay v2)",
+    ("v2", "lawam", "LaWAM: LAM DINOv3 token MSE at +35 ticks (nominal replay)",
      "paired_obs_e_pred_lat", "paired_ideal_e_pred_lat"),
     ("v1", "flux3", "FLUX 3 Action: DINOv2 distance, scene view, +16 ticks (e_pred only)",
      "e_pred.dino_scene@16", None),
@@ -45,10 +45,10 @@ def main() -> None:
             if yi is not None:
                 ax.plot([x, x], [yi, yp], color=GRID, lw=2, zorder=1)
         ax.scatter([r[1] for r in rows], [r[2] for r in rows], s=64, color=BLUE, marker="o", zorder=3,
-                   edgecolors=SURFACE, linewidths=2, label="e_pred: prediction vs observed")
+                   edgecolors=SURFACE, linewidths=2, label="d_fault: pred vs gap arm")
         if ki:
             ax.scatter([r[1] for r in rows], [r[3] for r in rows], s=64, color=ORANGE, marker="s", zorder=3,
-                       edgecolors=SURFACE, linewidths=2, label="e_ideal: prediction vs ideal replay of issued commands")
+                       edgecolors=SURFACE, linewidths=2, label="d_nominal: pred vs fault-free arm, same cmds")
         # Direct labels; nudge a label below its point when it would collide with one already placed.
         xr = max(r[1] for r in rows) - min(r[1] for r in rows) or 1.0
         yr = max(r[2] for r in rows) - min(r[2] for r in rows) or 1.0
@@ -68,8 +68,11 @@ def main() -> None:
         for sp in ("left", "bottom"):
             ax.spines[sp].set_color(GRID)
         ax.tick_params(colors=INK2, labelsize=9)
-        ax.legend(frameon=False, fontsize=9, loc="upper left", labelcolor=INK)
-    fig.suptitle("T004: WAM future prediction under injected sim control gaps (e_pred/e_ideal on the same queries)",
+        if ki:
+            ax.legend(frameon=False, fontsize=9, loc="center", bbox_to_anchor=(0.35, 0.55), labelcolor=INK)
+        else:
+            ax.legend(frameon=False, fontsize=9, loc="lower right", labelcolor=INK)
+    fig.suptitle("T004: WAM future prediction under injected sim control gaps (paired queries)",
                  fontsize=12, color=INK, x=0.01, ha="left")
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)

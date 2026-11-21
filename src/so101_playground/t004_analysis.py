@@ -209,6 +209,7 @@ def main() -> None:
     ap.add_argument("--conditions", default="none,gain,latency,offset,backlash,gain2,latency6,offset6")
     ap.add_argument("--tsv", type=Path, default=None, help="Append one row per condition (results.tsv).")
     ap.add_argument("--run_prefix", default="T004", help="run_id prefix: <prefix>-<model>-<condition>.")
+    ap.add_argument("--replay_note", default="", help="Prefix for the notes column describing the replay.")
     ap.add_argument("--ideal_invalid", action="store_true",
                     help="Runs made with the pre-review replay (unclamped chunk targets, gap actuators, no RTX flush): "
                          "write e_ideal / obs-ideal / e_exec as 'invalid'.")
@@ -234,7 +235,8 @@ def main() -> None:
     out.write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
     if args.tsv:
-        write_tsv(args.tsv, args.model, summary, prefix=args.run_prefix, ideal_invalid=args.ideal_invalid)
+        write_tsv(args.tsv, args.model, summary, prefix=args.run_prefix, ideal_invalid=args.ideal_invalid,
+                  replay_note=args.replay_note)
 
 
 TSV_COLS = ["run_id", "task", "model", "condition", "n_episodes", "success", "e_track_deg", "e_track@h_deg", "metric",
@@ -243,7 +245,8 @@ TSV_COLS = ["run_id", "task", "model", "condition", "n_episodes", "success", "e_
 FLUX_PRIMARY = "dino_scene@16"  # fixed before the sweep; others go to notes
 
 
-def write_tsv(path: Path, model: str, summary: dict, prefix: str = "T004", ideal_invalid: bool = False) -> None:
+def write_tsv(path: Path, model: str, summary: dict, prefix: str = "T004", ideal_invalid: bool = False,
+              replay_note: str = "") -> None:
     new = not path.exists() or not path.read_text().strip()
     with path.open("a") as f:
         if new:
@@ -258,7 +261,7 @@ def write_tsv(path: Path, model: str, summary: dict, prefix: str = "T004", ideal
                 return fmt.format(v)
             if model == "lawam":
                 metric = "LAM_DINOv3_token_mse@35"
-                vals = [g("obs_e_pred_lat"), g("paired_obs_e_pred_lat"), g("paired_ideal_e_pred_lat"), "",
+                vals = [g("obs_e_pred_lat"), g("paired_obs_e_pred_lat"), g("paired_ideal_e_pred_lat"), g("ideal_e_exec_lat"),
                         g("e_pred_minus_none"), g("e_pred_minus_none_ci95"), g("spearman_e_pred_vs_e_track_chunk", "{:.3f}")]
                 notes = (f"LaWAM full FT u45k; e_static={g('obs_e_static_lat')}; e_act_lat={g('obs_e_act_lat')}; "
                          f"paired_diff={g('paired_diff')} ci={g('paired_diff_ci95')}; ideal replay on every 2nd query")
@@ -280,7 +283,7 @@ def write_tsv(path: Path, model: str, summary: dict, prefix: str = "T004", ideal
                 notes = ("e_ideal/e_exec INVALID: pre-review replay (unclamped targets, gap actuators, RTX history; "
                          "review 2026-11-21 #2-4). " + notes)
             else:
-                notes = "replay v2 (issued cmds, nominal gains, arm teleported per substep, RTX flush). " + notes
+                notes = replay_note + notes
             row = [f"{prefix}-{model}-{cond}", "T004-wam-pred-gap-probe", model, cond, str(s["n_episodes"]),
                    g("success", "{:.3f}"), g("e_track_deg", "{:.3f}"), g("e_track_at_h_deg", "{:.3f}"), metric, *vals,
                    str(s["n_queries"]), notes]
