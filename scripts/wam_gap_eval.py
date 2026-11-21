@@ -15,6 +15,8 @@ so101_bench ``scripts/molmoact2_eval.py`` (same env construction, reset, initial
      is sent to the server's ``/lam_score`` (kind=observed).
    * ``--model flux3``: the observed scene|wrist canvas (256x512, FLUX's side_by_side resize) of every
      tick is stored as JPEG (q95) in ``<out>/frames_ep<e>.npz`` for offline pixel/feature metrics.
+   * ``--model internw0`` (T006): the observed overhead+wrist frames at s+4, s+8, ... are sent to the server's
+     ``/iw_score`` at s+16 (offsets 4..16 -> VAE latent 1) and s+32 (offsets 4..32 -> latents 1, 2).
    * ``--replay_episodes N`` / ``--replay_every k``: for the first N episodes, every k-th query snapshots the
      scene; at the end of that chunk the scene is reset to the snapshot, the commands the policy actually
      issued in the chunk (after the 15 deg/tick clamp, before the gap) are executed ideally (see
@@ -43,7 +45,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--task", default="So101Bench-Bin-v0")
-parser.add_argument("--model", choices=["lawam", "flux3"], required=True)
+parser.add_argument("--model", choices=["lawam", "flux3", "internw0"], required=True)
 parser.add_argument("--condition", default="none")
 parser.add_argument("--run_tag", default=None, help="Label for logs and server scores (default: the condition).")
 parser.add_argument("--episodes_jsonl", type=Path, required=True)
@@ -76,7 +78,10 @@ if args.headless and not getattr(args, "experience", ""):
     args.experience = "isaaclab.python.rendering.kit"  # as molmoact2_eval.py
 # replay_ticks: frames needed from the ideal replay (LaWAM scores s+35; FLUX is scored for j <= 31).
 MODEL_DEFAULTS = {"lawam": dict(action_horizon=36, history_ticks=1, replay_ticks=35),
-                  "flux3": dict(action_horizon=32, history_ticks=8, replay_ticks=31)}
+                  "flux3": dict(action_horizon=32, history_ticks=8, replay_ticks=31),
+                  # InternW0: 16 executed actions per query; its future latents span ticks 4-16 and 20-32.
+                  "internw0": dict(action_horizon=16, history_ticks=1, replay_ticks=32)}
+IW_OFFSETS = list(range(4, 33, 4))  # video frames of InternW0's 33-tick window after the query frame
 for k, v in MODEL_DEFAULTS[args.model].items():
     if getattr(args, k) is None:
         setattr(args, k, v)
@@ -367,6 +372,7 @@ def main() -> None:
         do_replay = ei < args.replay_episodes
         log = {k: [] for k in ("cmd", "sent", "applied", "q", "tick")}
         queries, chunks, pending, frames, ideal_frames, feats = [], [], {}, [], {}, {}
+        iw_png: dict[int, list[str]] = {}  # tick -> [overhead, wrist] policy-frame PNGs (InternW0 targets)
         replay_due: dict[int, tuple[int, dict]] = {}  # tick of the chunk's end -> (query tick, scene at query)
         started = False
         step = 0
@@ -406,10 +412,15 @@ def main() -> None:
                     chunks.append(chunk)
                     if args.model == "lawam":
                         pending[step + args.lam_horizon] = step
+                    if args.model == "internw0":
+                        pending.setdefault(step + 16, []).append(step)  # latent 1 (ticks 4-16, inside the chunk)
+                        pending.setdefault(step + 32, []).append(step)  # latents 1, 2 (ticks 20-32: next chunk runs)
                     if do_replay and (len(queries) - 1) % args.replay_every == 0:
-                        # Snapshot now; replay at the end of this chunk with the commands actually issued.
+                        # Snapshot now; replay at the end of this chunk (InternW0: of the next chunk, so the
+                        # replay covers all 32 predicted ticks) with the commands actually issued.
+                        due = step + (args.replay_ticks if args.model == "internw0" else args.action_horizon)
                         with torch.inference_mode(False):
-                            replay_due[step + args.action_horizon] = (step, u.scene.get_state(is_relative=False))
+                            replay_due[due] = (step, u.scene.get_state(is_relative=False))
             if not started:
                 sent = cmd
             applied = gap(sent) if started else sent
@@ -423,6 +434,17 @@ def main() -> None:
             if save_frames:
                 frames.append(_jpeg(_canvas(obs["visual"])))
             ended = bool(terminated.any() or truncated.any())
+            if args.model == "internw0" and not ended and any(0 < step - q <= 32 and (step - q) % 4 == 0
+                                                              for q in queries[-3:]):
+                iw_png[step] = [_png_b64(_policy_frame(policy, obs["visual"], c)) for c in ("overhead", "wrist")]
+                for k in [k for k in iw_png if k < step - 40]:
+                    del iw_png[k]
+            if args.model == "internw0" and step in pending and not ended:
+                for qs in pending.pop(step):
+                    offs = IW_OFFSETS[: (step - qs) // 4]
+                    _post(args.policy_port, "/iw_score", {"dir": str(out), "attempt": attempt, "episode": ep_id,
+                          "frame": qs, "kind": "observed", "condition": tag, "offsets": offs,
+                          "images_png_base64": [iw_png[qs + o] for o in offs]})
             if args.model == "lawam" and step in pending and not ended:
                 qs = pending.pop(step)
                 res = _post(args.policy_port, "/lam_score", {"return_features": save_frames, "dir": str(out),
@@ -436,6 +458,7 @@ def main() -> None:
                 obs = _clone_obs(obs)  # the next query's input, rendered before the replay
                 tgts = [torch.as_tensor(c, device=u.device) for c in log["cmd"][qs: qs + args.replay_ticks]]
                 capture = ({args.lam_horizon} if args.model == "lawam" and not save_frames
+                           else set(IW_OFFSETS) if args.model == "internw0" and not save_frames
                            else set(range(1, len(tgts) + 1)))
                 branch = replay_branch(env, start_state, tgts, capture, nominal_stiffness, mode=args.replay_mode)
                 if save_frames:
@@ -448,6 +471,12 @@ def main() -> None:
                         "obs_frame": qs + args.lam_horizon, "camera_names": ["overhead", "wrist"],
                         "images_png_base64": [_png_b64(_policy_frame(policy, vis, c)) for c in ("overhead", "wrist")]})
                     _keep_features(feats, "ideal", qs, res)
+                if args.model == "internw0" and all(o in branch for o in IW_OFFSETS):
+                    _post(args.policy_port, "/iw_score", {"dir": str(out), "attempt": attempt, "episode": ep_id,
+                          "frame": qs, "kind": args.replay_mode, "replay_mode": args.replay_mode, "condition": tag,
+                          "offsets": IW_OFFSETS, "images_png_base64": [
+                              [_png_b64(_policy_frame(policy, branch[o], c)) for c in ("overhead", "wrist")]
+                              for o in IW_OFFSETS]})
             if ended:
                 term = info.get("log", {})
                 success = bool(term.get("Episode_Termination/success", 0.0) > 0.0)

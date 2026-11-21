@@ -25,3 +25,6 @@ trackio/
 envs/flux3/flux-action/
 envs/*/weights/
 envs/*/*.log
+
+# T006: InternW0-Delta source tarball checkout
+envs/internw0/InternW0-Delta/
