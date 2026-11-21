@@ -26,8 +26,9 @@
 - /workspace 디스크 여유 ~231G (공용).
 
 ## 백로그
-- [진행] T001-scaffold-env: 레포 골격 + submodule + 환경 2개 + Isaac Sim 동작 확인
-- [진행] T002-bench-real-audit: bench real runner·캘리브레이션·/act 서버 분석 → 우리 셋업과 맞출 항목
+- [부분] T001-scaffold-env: 골격·submodule·환경 2개 완료(exp/scaffold-env), Isaac 은 libGLU 없어 카메라 env 실패 → libglu1-mesa 설치
+- [진행] T003-isaac-bench-smoke: T001 이어서 bench env headless step
+- [완료] T002-bench-real-audit: docs/bench-real-setup.md (exp/bench-real-audit). 1순위 = so101_sim_alignment 로 우리 팔 관절 zero 측정(현장 작업). 집 셋업 질문 10개(§7) 답변 대기
 - [ ] 집 데스크탑 robot client ↔ GPU 서버 정책 서버 SSH 터널 연결 테스트 (지연·대역폭 측정)
 - [ ] bench sim 평가 baseline (공개 체크포인트 1~2개, 축소 split)
 - [ ] 공개 체크포인트 실기 zero-shot (Q1)
