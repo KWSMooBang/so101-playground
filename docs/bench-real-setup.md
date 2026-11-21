@@ -44,7 +44,7 @@ SO-101 Bench 의 정책 서버·실기 runner·캘리브레이션 코드를 읽�
 
 ### 1.2 action chunk / replan
 
-- 서버는 체크포인트의 chunk 전체(또는 `--replan_steps` 만큼)를 돌려주고, 클라이언트가 앞의 `action_horizon` 개만 큐에 넣어 한 틱에 하나씩 실행한다. 큐가 비면 다시 쿼리 (`molmoact2.py:394-409`). temporal ensembling 없음, 비동기 추론 없음.
+- 서버는 체크포인트의 chunk 전체를 돌려주고(`--replan_steps` 플래그가 있는 G0.5·InternW0·ImageWAM 서버만 그 값을 쓴다. π0.5·MolmoAct2·LaWAM·FLUX 서버에는 없다), 클라이언트가 앞의 `action_horizon` 개만 큐에 넣어 한 틱에 하나씩 실행한다. 큐가 비면 다시 쿼리 (`molmoact2.py:394-409`). temporal ensembling 없음, 비동기 추론 없음.
 - 액션은 **절대 관절 목표 위치**, 상태와 같은 단위·순서. gripper 도 절대값.
 - 정책별 설정 (`README.md:61-69`, `so101_real_policy_runner.py:108-121`, 논문 Table 8):
 
@@ -187,7 +187,7 @@ world frame: 테이블 상면 z=0 (`so101_bench_env_cfg.py:52`). 값은 `benchma
 ### 5.1 가능 여부: 가능, 코드 수정 없음
 
 - runner 는 `--policy_host`(기본 127.0.0.1) / `--policy_port` 로 접속한다 (`so101_real_policy_runner.py:193, :200`).
-- 시작 시 `PolicyServerManager.ensure()` 가 먼저 해당 포트에 `GET /act` 를 해 보고, 응답하면 "reusing" 하고 로컬 서버를 띄우지 않는다 (`:553-557`). 터널이 안 떠 있으면 `~/workspace/...` 의 로컬 레시피를 실행하려다 "checkpoint missing" 으로 죽는다 (`:559-563`). → **runner 보다 터널을 먼저** 띄울 것.
+- 시작 시 `PolicyServerManager.ensure()` 가 먼저 해당 포트의 서버가 살아 있는지 확인하고(HTTP 정책은 `GET /act` 가 `status: ok`, GR00T 는 ZMQ REQ 로 msgpack `{"endpoint": "ping"}` 을 보내 2 s 안에 응답, `:484-510`), 응답하면 "reusing" 하고 로컬 서버를 띄우지 않는다 (`:553-557`). 터널이 안 떠 있으면 `~/workspace/...` 의 로컬 레시피를 실행하려다 "checkpoint missing" 으로 죽는다 (`:559-563`). → **runner 보다 터널을 먼저** 띄울 것.
 - `stop_strays()` 는 로컬 `pgrep` 만 하므로 원격 서버에 영향 없음 (`:526-551`).
 - 정책 전환 키(`p`, `1`–`6`)도 같은 `ensure()` 를 타므로, 정책별 포트(5555/8001/8002/8003)를 각각 터널링해 두면 전환도 된다. 단 GPU 서버에서 여러 정책을 동시에 올려 두어야 한다(그들은 3090 한 장이라 하나씩 교체, `:527-528`).
 - 예: `ssh -N -L 8001:127.0.0.1:8001 -L 8002:127.0.0.1:8002 -L 8003:127.0.0.1:8003 -L 5555:127.0.0.1:5555 <gpu-server>`. HTTP 는 요청마다 새 연결(urllib, keep-alive 없음)이지만 터널 안에서는 채널 하나 여는 비용뿐이다. GR00T 의 ZMQ REQ/REP 도 TCP 라 `-L` 로 된다.
@@ -229,7 +229,7 @@ world frame: 테이블 상면 z=0 (`so101_bench_env_cfg.py:52`). 값은 `benchma
   1. 클라이언트에서 JPEG(q≈90–95)로 인코딩: 서버 수정 없이 받는다(PIL 자동 판별). 요청이 약 1/5–1/10. 단 입력 분포가 달라진다(학습 데이터는 AV1 영상이긴 하다).
   2. init 프레임을 서버에 캐시하도록 양쪽 수정.
   3. runner 를 GPU 서버 쪽에 두고 카메라/시리얼만 원격화 — 30 Hz 모터 루프가 네트워크를 타므로 비권장.
-- 백로그의 "SSH 터널 연결 테스트" 에서 잴 것: 실제 카메라 프레임의 PNG 크기, uplink, 쿼리 왕복(runner HUD 의 `last_query_s`, `:1439-1440`) − 서버 `dt_ms` = 전송 오버헤드.
+- 백로그의 "SSH 터널 연결 테스트" 에서 잴 것: 실제 카메라 프레임의 PNG 크기, uplink, 전송 오버헤드[s] = `last_query_s` − `dt_ms / 1000`. `last_query_s` 는 runner 가 잰 쿼리 왕복(초, `:1439-1440`), `dt_ms` 는 HTTP 서버가 응답에 넣는 추론 시간(밀리초, 클라이언트가 로그로 출력 `molmoact2.py:382`). GR00T 는 `dt_ms` 가 없으므로 서버 쪽에서 따로 재야 한다.
 
 ## 6. 맞춰야 할 것 체크리스트
 
@@ -241,10 +241,10 @@ must = 안 맞으면 정책이 틀린 입력/출력을 보거나 sim↔real 비�
 - [ ] **must** bench 정책의 state/action 은 bench 고정 `.pos` 프레임(1.3). 우리 팔의 LeRobot `.pos` 를 직접 넣지 않는다. runner 의 `RealArm`(raw tick) 경로를 쓰거나 같은 변환을 구현.
 - [ ] **must** 관절 순서 `pan, lift, elbow, wrist_flex, wrist_roll, gripper`, 모터 id 1–6, 부호 관례가 USD 와 같은지 `live`/`verify` 로 확인.
 - [ ] **must** gripper 관례: 0 = 닫힘(jaw −12.75°), 100 = 115.5° 개방, jaw 각도 선형. gripper zero 는 "끝이 막 닿음 = −12°" 로 측정. EEPROM `Min_Position_Limit` 하한 준수(jaw 파손 방지).
-- [ ] **must** 제어 30 Hz, 정책별 실행 스텝(15/16/30)과 서버 `--replan_steps` 일치, 쿼리 중 hold.
+- [ ] **must** 제어 30 Hz, 쿼리 중 hold. 쿼리당 실행 스텝은 **runner 의 `--action_horizon`** 이 정한다 (G0.5 15, π0.5 15, GR00T 16, MolmoAct2 30; `POLICY_DEFAULTS`). 서버 쪽 `--replan_steps` 는 그 플래그가 있는 서버(G0.5 15, InternW0 16, ImageWAM 16)에서만 같은 값으로 맞춘다. π0.5·MolmoAct2 서버에는 그 플래그가 없고 chunk 전체(30)를 돌려준다.
 - [ ] **must** 에피소드는 dock pose `(-6.5, -98.8, 81.2, 71.2, -0.8, 0.9)` 에서 시작. init 프레임 쓰는 정책(GR00T, π0.5, MolmoAct2)은 dock 정지 상태에서 캡처.
 - [ ] **must** 안전 한계 유지: 틱당 속도 clamp, 15°/틱 clamp, watchdog 25°/1 s.
-- [ ] nice `so101_gripper_test.py t` 로 gripper stall 보정 측정.
+- [ ] nice gripper stall 보정 측정: `so101_gripper_test.py` 를 인자 없이(필요하면 `--port`, `--robot_id`) 실행한 뒤 인터랙티브 프롬프트에서 `t` 입력. `t` 는 CLI 인자가 아니다 (`so101_gripper_test.py:34-38, :106-110`).
 - [ ] nice 모터 P gain 이 LeRobot 기본(P=16) 인지 확인 — runner 는 gain 을 쓰지 않는다.
 - [ ] nice `verify` 로 tracking error 기록(그들 sim actuator 는 실기에 맞춰 튜닝됨).
 
