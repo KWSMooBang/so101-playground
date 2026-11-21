@@ -83,6 +83,14 @@ fails: MDL does not load, the RTX shaders fail to compile and the process aborts
 `CUDA error: an illegal memory access` in `omni.physx.tensors` during env creation. Needs
 `apt-get install libglu1-mesa` (as of 2026-11-21 not installed; bench env not yet stepped).
 
+### WAM control-gap probe (T004)
+
+Extra envs: `envs/lawam/setup_lawam.sh` (LaWAM, its own lerobot venv) and `envs/flux3/setup_flux3.sh`
+(flux-action venv + FLUX 3 weights, gated). The isaac-side launcher `scripts/run_t004_eval.sh` sources
+`$ISAAC_ENV/envs/isaac/env.sh`. `ISAAC_ENV` defaults to the checkout that built the isaac venv on our GPU
+server (`/workspace/so101-playground/.claude/worktrees/scaffold-env`); set `ISAAC_ENV=<your checkout>`
+anywhere else. Method, commands and results: `docs/T004-wam-control-gap.md`.
+
 ## Roles
 
 - **LeRobot**: real-robot control, teleoperation, data collection, small policies (ACT, SmolVLA).

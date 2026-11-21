@@ -8,7 +8,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 LEROBOT_SRC="${LEROBOT_SRC:-$here/../../third_party/lerobot}"
 cd "$here"
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e "$LEROBOT_SRC[lawam]"
+uv pip install --python .venv/bin/python -e "$LEROBOT_SRC[lawam]" av   # av: t004_videos.py
 hf=.venv/bin/hf
 # Bench LaWAM full fine-tune, update 45000 (public; 21/39 on the bench's validation set).
 $hf download 5hadytru/so101_bench_LaWAM_full_fine_tune --revision 8df458f038f78e0eb02d050fff783f24ed4dabda \

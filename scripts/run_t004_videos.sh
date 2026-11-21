@@ -6,7 +6,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 port=$1 root=$2 conds=$3 ticks=${4:-360}
-py="$here/envs/flux3/flux-action/.venv/bin/python"   # numpy + PIL + av
+py="${VIDEO_PY:-$here/envs/lawam/.venv/bin/python}"   # numpy + PIL + av (envs/lawam/setup_lawam.sh installs av)
 vids="$root/lawam_videos"
 mkdir -p "$vids"
 for cond in ${conds//,/ }; do

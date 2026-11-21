@@ -34,7 +34,8 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-HORIZONS = (1, 4, 8, 16, 24, 31, 40)
+# j <= 31: the executed part of the 32-action chunk; later predicted frames overlap the next chunk.
+HORIZONS = (1, 4, 8, 16, 24, 31)
 
 
 def _jpeg_decode(b: bytes) -> np.ndarray:
@@ -80,10 +81,19 @@ class Metrics:
 
 def run_dir(run: Path, metrics: Metrics, align: int, horizons=HORIZONS, max_queries: int | None = None):
     rows = []
+    reasons = {}
+    if (run / "episodes.jsonl").exists():
+        for line in (run / "episodes.jsonl").read_text().splitlines():
+            if line.strip():
+                r = json.loads(line)
+                reasons[r["episode"]] = r["reason"]
     for fe in sorted(run.glob("frames_ep*.npz")):
         ep = int(fe.stem.removeprefix("frames_ep"))
         fz = np.load(fe, allow_pickle=True)
         observed = fz["observed"]
+        # The frame after a terminating step is the auto-reset scene (env.step resets inside the step); only
+        # frames after s + j steps with s + j < the final tick are real futures, unless the run stopped at max_ticks.
+        n_valid = len(observed) - (0 if reasons.get(ep) == "max_ticks" else 1)
         ideal_q = [int(q) for q in fz["ideal_queries"]]
         ideal = {q: fz["ideal"][i] for i, q in enumerate(ideal_q)}
         d = np.load(run / f"ep{ep:03d}.npz", allow_pickle=True)
@@ -93,7 +103,7 @@ def run_dir(run: Path, metrics: Metrics, align: int, horizons=HORIZONS, max_quer
             if not vp.exists():
                 continue
             pred = _video(vp)
-            js = [j for j in horizons if 0 <= j < len(pred) and 1 <= s + j + align <= len(observed)]
+            js = [j for j in horizons if 0 <= j < len(pred) and 1 <= s + j + align <= n_valid]
             if not js:
                 continue
             P = np.stack([pred[j] for j in js])

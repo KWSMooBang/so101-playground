@@ -128,7 +128,7 @@ class Probe:
         actions = torch.stack([self.postprocessor(chunk[:, i, :]) for i in range(chunk.shape[1])], dim=1)[0]
         if trace is not None and self._last_shared is not None:
             s = self._last_shared
-            key = (int(trace["episode"]), int(trace["frame"]))
+            key = (str(trace.get("dir", "")), int(trace["episode"]), int(trace["frame"]))  # dir: one client run
             self.memory.pop(key, None)  # re-insert at the end: eviction is by insertion order
             self.memory[key] = {
                 "h_t": s.h_t.detach().float().clone(),
@@ -143,7 +143,7 @@ class Probe:
 
     @torch.inference_mode()
     def score(self, payload: dict[str, Any]) -> dict[str, Any]:
-        key = (int(payload["episode"]), int(payload["frame"]))
+        key = (str(payload.get("dir", "")), int(payload["episode"]), int(payload["frame"]))
         if key not in self.memory:
             raise ValueError(f"no stored prediction for episode/frame {key}")
         mem = self.memory[key]
@@ -164,7 +164,7 @@ class Probe:
         pred, h_t = mem["h_t1_pred"], mem["h_t"]
         pae = mem["pred_action_emb"]
         out = {
-            "episode": key[0], "frame": key[1], "kind": payload.get("kind", "observed"),
+            "episode": key[1], "frame": key[2], "kind": payload.get("kind", "observed"),
             "obs_frame": payload.get("obs_frame"),
             "e_pred_lat": float(F.mse_loss(pred, h_obs)),
             "cos_pred_lat": float(1 - F.cosine_similarity(pred, h_obs, dim=-1).mean()),
@@ -175,7 +175,7 @@ class Probe:
             "cos_act_lat": float(1 - F.cosine_similarity(pae.flatten(1), teacher.flatten(1), dim=-1).mean())
             if pae.shape == teacher.shape else None,
         }
-        out.update({k: payload[k] for k in ("condition",) if k in payload})
+        out.update({k: payload[k] for k in ("condition", "attempt", "dir") if k in payload})
         self.score_log.write(json.dumps(out) + "\n")
         self.score_log.flush()
         if payload.get("return_features"):  # for visualization: (256 tokens x 768) as fp16 base64

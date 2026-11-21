@@ -15,10 +15,11 @@ so101_bench ``scripts/molmoact2_eval.py`` (same env construction, reset, initial
      is sent to the server's ``/lam_score`` (kind=observed).
    * ``--model flux3``: the observed scene|wrist canvas (256x512, FLUX's side_by_side resize) of every
      tick is stored as JPEG (q95) in ``<out>/frames_ep<e>.npz`` for offline pixel/feature metrics.
-   * ``--replay_episodes N``: for the first N episodes, at every query the scene is snapshotted, the
-     policy chunk is executed with perfect tracking (joint positions written each control tick, PD target
-     = command, objects simulated normally), the replay frames are kept / scored (kind=ideal), and the
-     snapshot is restored before the real rollout continues.
+   * ``--replay_episodes N`` / ``--replay_every k``: for the first N episodes, every k-th query snapshots the
+     scene; at the end of that chunk the scene is reset to the snapshot, the commands the policy actually
+     issued in the chunk (after the 15 deg/tick clamp, before the gap) are executed ideally (see
+     ``replay_branch``), the replay frames are kept / scored (kind=ideal), and the end-of-chunk scene is
+     restored (and re-rendered) before the rollout continues.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from pathlib import Path
 import random
 import sys
 import time
+import uuid
 
 from isaaclab.app import AppLauncher
 
@@ -66,8 +68,9 @@ args = parser.parse_args()
 args.enable_cameras = True
 if args.headless and not getattr(args, "experience", ""):
     args.experience = "isaaclab.python.rendering.kit"  # as molmoact2_eval.py
-MODEL_DEFAULTS = {"lawam": dict(action_horizon=36, history_ticks=1, replay_ticks=36),
-                  "flux3": dict(action_horizon=32, history_ticks=8, replay_ticks=41)}
+# replay_ticks: frames needed from the ideal replay (LaWAM scores s+35; FLUX is scored for j <= 31).
+MODEL_DEFAULTS = {"lawam": dict(action_horizon=36, history_ticks=1, replay_ticks=35),
+                  "flux3": dict(action_horizon=32, history_ticks=8, replay_ticks=31)}
 for k, v in MODEL_DEFAULTS[args.model].items():
     if getattr(args, k) is None:
         setattr(args, k, v)
@@ -208,24 +211,37 @@ def _keep_features(feats: dict, kind: str, frame: int, res: dict) -> None:
 
 
 # ---------------------------------------------------------------- ideal (kinematic) replay branch
-def replay_branch(env, targets: list[torch.Tensor], capture: set[int]) -> dict[int, dict]:
-    """Execute ``targets`` with perfect tracking from the current state; return visual obs after tick j
-    (j = 1..len) for j in ``capture``. The scene is restored afterwards."""
+FLUSH_RENDERS = 3  # re-renders of the restored state so the RTX temporal history holds no replay frames
+
+
+def replay_branch(env, start_state: dict, targets: list[torch.Tensor], capture: set[int],
+                  nominal_stiffness: torch.Tensor) -> dict[int, dict]:
+    """Ideal execution of ``targets`` (the commands the policy actually issued, i.e. after the client's
+    15 deg/tick clamp and before the gap) from ``start_state`` (the scene at the query tick).
+
+    Arm (5 joints): joint positions written at every physics substep (zero velocity), so the arm is exactly
+    at the command whatever the actuator does. Jaw: tracked by its PD drive (teleporting it would push
+    through a grasped object). Drives use the nominal (no-gap) stiffness during the replay. Objects are
+    simulated normally; every tick is rendered as env.step does. Returns visual obs after tick j for j in
+    ``capture``. The current scene, drive gains and PD targets are restored afterwards, and the restored state
+    is re-rendered FLUSH_RENDERS times so the following real frames carry no replay history."""
     u = env.unwrapped
     scene, robot = u.scene, u.scene["robot"]
     ids = [robot.joint_names.index(j) for j in JOINT_NAMES]
+    arm_ids = ids[:5]
     with torch.inference_mode(False):
-        state = scene.get_state(is_relative=False)
+        now = scene.get_state(is_relative=False)
         saved_target = robot.data.joint_pos_target.clone()
+        gap_stiffness = robot.data.joint_stiffness.clone()
+        robot.write_joint_stiffness_to_sim(nominal_stiffness)
+        scene.reset_to(start_state, is_relative=False)
         out = {}
-        zeros = torch.zeros((1, len(ids)), device=u.device)
-        # Render every tick exactly as env.step does: skipping renders changes the RTX image (temporal
-        # accumulation), measured +-10% on the LAM score. Ticks after the last capture are skipped.
+        zeros = torch.zeros((1, 5), device=u.device)
         for j, tgt in enumerate(targets[: max(capture)], start=1):
             q = tgt.reshape(1, -1).to(u.device)
-            robot.write_joint_state_to_sim(q, zeros, joint_ids=ids)
             robot.set_joint_position_target(q, joint_ids=ids)
             for sub in range(u.cfg.decimation):
+                robot.write_joint_state_to_sim(q[:, :5], zeros, joint_ids=arm_ids)
                 scene.write_data_to_sim()
                 u.sim.step(render=False)
                 if sub == u.cfg.decimation - 1:
@@ -234,11 +250,22 @@ def replay_branch(env, targets: list[torch.Tensor], capture: set[int]) -> dict[i
             if j in capture:
                 vis = u.observation_manager.compute_group("visual")
                 out[j] = {k: v.clone() for k, v in vis.items()}
-        scene.reset_to(state, is_relative=False)
+        robot.write_joint_stiffness_to_sim(gap_stiffness)
+        scene.reset_to(now, is_relative=False)
         robot.set_joint_position_target(saved_target)
         scene.write_data_to_sim()
         u.sim.forward()
+        for _ in range(FLUSH_RENDERS):
+            u.sim.render()
     return out
+
+
+def _clone_obs(obs):
+    if isinstance(obs, torch.Tensor):
+        return obs.clone()
+    if isinstance(obs, dict):
+        return {k: _clone_obs(v) for k, v in obs.items()}
+    return obs
 
 
 # ---------------------------------------------------------------- main
@@ -269,6 +296,7 @@ def main() -> None:
     env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=1)
     env_cfg.seed = args.seed
     env_cfg.scene.robot.init_state.joint_pos = dict(INITIAL)
+    nominal_stiffness_cfg = dict(env_cfg.scene.robot.actuators["arm"].stiffness)
     stiffness = apply_actuator_gap(env_cfg, gap_cfg)
     asset_names = configure_env_cfg_for_object_pool(env_cfg, pool)
     env_cfg.events.reset_benchmark_scene.params.update(_reset_params(episodes[0], layouts[0], pool, asset_names))
@@ -299,6 +327,12 @@ def main() -> None:
     gap = CommandGap(gap_cfg, u.device)
     robot = u.scene["robot"]
     ids = [robot.joint_names.index(j) for j in JOINT_NAMES]
+    nominal_stiffness = robot.data.joint_stiffness.clone()
+    for j, name in enumerate(robot.joint_names):
+        if name in nominal_stiffness_cfg:
+            nominal_stiffness[:, j] = float(nominal_stiffness_cfg[name])
+    attempt = uuid.uuid4().hex[:12]  # tags this process's rows in append-only logs
+    tag = args.run_tag or args.condition
     summary_path = out / "episodes.jsonl"
     done_eps = set()
     if summary_path.exists():
@@ -319,6 +353,7 @@ def main() -> None:
         do_replay = ei < args.replay_episodes
         log = {k: [] for k in ("cmd", "applied", "q", "tick")}
         queries, chunks, pending, frames, ideal_frames, feats = [], [], {}, [], {}, {}
+        replay_due: dict[int, tuple[int, dict]] = {}  # tick of the chunk's end -> (query tick, scene at query)
         started = False
         step = 0
         success, reason = False, "unknown"
@@ -348,22 +383,9 @@ def main() -> None:
                     if args.model == "lawam":
                         pending[step + args.lam_horizon] = step
                     if do_replay and (len(queries) - 1) % args.replay_every == 0:
-                        tgts = [policy.mapper.model_positions_to_sim_radians(
-                            torch.as_tensor(row, device=u.device)) for row in chunk[: args.replay_ticks]]
-                        capture = ({args.lam_horizon} if args.model == "lawam" and not save_frames
-                                   else set(range(1, len(tgts) + 1)))
-                        branch = replay_branch(env, tgts, capture)
-                        if args.model == "lawam" and args.lam_horizon in branch:
-                            vis = branch[args.lam_horizon]
-                            if save_frames:
-                                ideal_frames[step] = [_jpeg(_canvas(branch[j])) for j in sorted(branch)]
-                            res = _post(args.policy_port, "/lam_score", {"return_features": save_frames,
-                                "episode": ep_id, "frame": step, "kind": "ideal", "condition": args.run_tag or args.condition,
-                                "obs_frame": step + args.lam_horizon, "camera_names": ["overhead", "wrist"],
-                                "images_png_base64": [_png_b64(_policy_frame(policy, vis, c)) for c in ("overhead", "wrist")]})
-                            _keep_features(feats, "ideal", step, res)
-                        elif args.model == "flux3":
-                            ideal_frames[step] = [_jpeg(_canvas(branch[j])) for j in sorted(branch)]
+                        # Snapshot now; replay at the end of this chunk with the commands actually issued.
+                        with torch.inference_mode(False):
+                            replay_due[step + args.action_horizon] = (step, u.scene.get_state(is_relative=False))
             applied = gap(cmd) if started else cmd
             obs, _r, terminated, truncated, info = env.step(applied.unsqueeze(0))
             step += 1
@@ -376,11 +398,27 @@ def main() -> None:
             ended = bool(terminated.any() or truncated.any())
             if args.model == "lawam" and step in pending and not ended:
                 qs = pending.pop(step)
-                res = _post(args.policy_port, "/lam_score", {"return_features": save_frames,
-                    "episode": ep_id, "frame": qs, "kind": "observed", "condition": args.run_tag or args.condition, "obs_frame": step,
+                res = _post(args.policy_port, "/lam_score", {"return_features": save_frames, "dir": str(out),
+                    "attempt": attempt, "episode": ep_id, "frame": qs, "kind": "observed", "condition": tag, "obs_frame": step,
                     "camera_names": ["overhead", "wrist"],
                     "images_png_base64": [_png_b64(_policy_frame(policy, obs["visual"], c)) for c in ("overhead", "wrist")]})
                 _keep_features(feats, "observed", qs, res)
+            if step in replay_due and not ended:
+                qs, start_state = replay_due.pop(step)
+                obs = _clone_obs(obs)  # the next query's input, rendered before the replay
+                tgts = [torch.as_tensor(c, device=u.device) for c in log["cmd"][qs: qs + args.replay_ticks]]
+                capture = ({args.lam_horizon} if args.model == "lawam" and not save_frames
+                           else set(range(1, len(tgts) + 1)))
+                branch = replay_branch(env, start_state, tgts, capture, nominal_stiffness)
+                if save_frames:
+                    ideal_frames[qs] = [_jpeg(_canvas(branch[j])) for j in sorted(branch)]
+                if args.model == "lawam" and args.lam_horizon in branch:
+                    vis = branch[args.lam_horizon]
+                    res = _post(args.policy_port, "/lam_score", {"return_features": save_frames, "dir": str(out),
+                        "attempt": attempt, "episode": ep_id, "frame": qs, "kind": "ideal", "condition": tag,
+                        "obs_frame": qs + args.lam_horizon, "camera_names": ["overhead", "wrist"],
+                        "images_png_base64": [_png_b64(_policy_frame(policy, vis, c)) for c in ("overhead", "wrist")]})
+                    _keep_features(feats, "ideal", qs, res)
             if ended:
                 term = info.get("log", {})
                 success = bool(term.get("Episode_Termination/success", 0.0) > 0.0)
@@ -399,8 +437,8 @@ def main() -> None:
             np.savez(out / f"frames_ep{ep_id:03d}.npz", observed=np.array(frames, dtype=object),
                      ideal_queries=np.asarray(sorted(ideal_frames)),
                      ideal=np.array([np.array(ideal_frames[k], dtype=object) for k in sorted(ideal_frames)], dtype=object))
-        rec = {"episode": ep_id, "trial_id": (episode.metadata or {}).get("trial_id"), "objects": episode.objects, "condition": args.run_tag or args.condition,
-               "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
+        rec = {"episode": ep_id, "trial_id": (episode.metadata or {}).get("trial_id"), "objects": episode.objects, "condition": tag,
+               "attempt": attempt, "success": success, "reason": reason, "ticks": step, "n_queries": len(queries),
                "wall_s": time.time() - t_ep, "inference_wall_s": t_inf, "replay": do_replay}
         with summary_path.open("a") as f:
             f.write(json.dumps(rec) + "\n")

@@ -53,28 +53,38 @@ def _boot_ci(values: dict, n: int = 2000, seed: int = 0) -> list[float] | None:
 
 
 def delta_vs_none(summary: dict, n: int = 2000, seed: int = 0) -> None:
-    """Episode-paired bootstrap of (condition - none) for every per-episode series stored under "_ep:<name>"
-    (same episodes and layouts across conditions). Writes "<name>_minus_none" and its 95% CI."""
+    """(condition - none) for every per-query series stored under "_q:<name>" ({episode: [values]}).
+    Point estimate = difference of query-weighted means (the same weighting as every mean in the tables);
+    95% CI = episode-paired bootstrap: resample episode ids (same layouts in both conditions) and recompute
+    both query-weighted means over the resampled episodes."""
     if "none" not in summary:
         return
     rng = np.random.default_rng(seed)
     for key, base in summary["none"].items():
-        if not key.startswith("_ep:"):
+        if not key.startswith("_q:"):
             continue
-        name = key[4:]
+        name = key[3:]
         for cond, s in summary.items():
             cur = s.get(key, {})
             eps = sorted(set(base) & set(cur))
             if cond == "none" or len(eps) < 2:
                 continue
-            d = np.array([cur[e] - base[e] for e in eps])
-            boots = [d[rng.integers(0, len(d), len(d))].mean() for _ in range(n)]
-            s[f"{name}_minus_none"] = float(d.mean())
+            def qmean(series, pick):
+                return float(np.mean(np.concatenate([series[e] for e in pick])))
+            s[f"{name}_minus_none"] = qmean(cur, eps) - qmean(base, eps)
+            boots = []
+            for _ in range(n):
+                pick = rng.choice(eps, size=len(eps), replace=True)
+                boots.append(qmean(cur, pick) - qmean(base, pick))
             s[f"{name}_minus_none_ci95"] = [float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))]
 
 
-def _per_episode(values: dict) -> dict:
-    return {str(e): float(np.mean([v for (ee, _), v in values.items() if ee == e])) for e in sorted({k[0] for k in values})}
+def _per_query(values: dict) -> dict:
+    """{(episode, frame): v} -> {episode: [v, ...]} for delta_vs_none."""
+    out: dict = {}
+    for (e, _), v in values.items():
+        out.setdefault(str(e), []).append(float(v))
+    return out
 
 
 def track_stats(run: Path, horizon: int) -> tuple[dict, dict]:
@@ -114,6 +124,15 @@ def lawam_stats(run: Path, per_query_track: dict) -> dict:
     p = run.parent / "lam_scores.jsonl"  # one server log for all conditions, rows tagged by condition
     rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
     rows = [r for r in rows if r.get("condition") == run.name and r["episode"] >= 0]
+    # Only rows of the attempt that completed each episode (episodes.jsonl "attempt"); a crashed or re-run attempt
+    # leaves rows with another attempt id in the append-only log. Legacy rows without ids: the last row per key wins.
+    attempts = {}
+    for line in (run / "episodes.jsonl").read_text().splitlines():
+        if line.strip():
+            e = json.loads(line)
+            if e.get("attempt"):
+                attempts[e["episode"]] = e["attempt"]
+    rows = [r for r in rows if r["episode"] not in attempts or r.get("attempt") == attempts[r["episode"]]]
     obs = {(r["episode"], r["frame"]): r for r in rows if r["kind"] == "observed"}
     ide = {(r["episode"], r["frame"]): r for r in rows if r["kind"] == "ideal"}
     out = {"n_obs_scores": len(obs), "n_ideal_scores": len(ide)}
@@ -133,7 +152,7 @@ def lawam_stats(run: Path, per_query_track: dict) -> dict:
     ratio = {k: r["e_pred_lat"] / r["e_static_lat"] for k, r in obs.items() if r["e_static_lat"] > 0}
     out["obs_e_pred_over_static_median"] = float(np.median(list(ratio.values()))) if ratio else None
     out["obs_e_pred_ci95"] = _boot_ci({k: r["e_pred_lat"] for k, r in obs.items()})
-    out["_ep:e_pred"] = _per_episode({k: r["e_pred_lat"] for k, r in obs.items()})
+    out["_q:e_pred"] = _per_query({k: r["e_pred_lat"] for k, r in obs.items()})
     keys = [k for k in obs if k in per_query_track]
     out["spearman_e_pred_vs_e_track_at_h"] = _spearman([obs[k]["e_pred_lat"] for k in keys],
                                                        [per_query_track[k][0] for k in keys])
@@ -161,7 +180,7 @@ def flux_stats(run: Path) -> dict:
                 continue
             out[f"e_pred.{name}"] = float(np.mean(list(obs.values())))
             out[f"e_pred.{name}_ci95"] = _boot_ci(obs)
-            out[f"_ep:e_pred.{name}"] = _per_episode(obs)
+            out[f"_q:e_pred.{name}"] = _per_query(obs)
             ide = {(r["episode"], r["frame"]): r[f"pred_ideal.{m}"] for r in rj if f"pred_ideal.{m}" in r}
             exe = {(r["episode"], r["frame"]): r[f"obs_ideal.{m}"] for r in rj if f"obs_ideal.{m}" in r}
             paired = [k for k in ide if k in obs]
@@ -200,7 +219,7 @@ def main() -> None:
         summary[cond] = s
     delta_vs_none(summary)
     for s in summary.values():
-        for k in [k for k in s if k.startswith("_ep:")]:
+        for k in [k for k in s if k.startswith("_q:")]:
             s.pop(k)
     out = args.root / args.model / "summary.json"
     out.write_text(json.dumps(summary, indent=2))

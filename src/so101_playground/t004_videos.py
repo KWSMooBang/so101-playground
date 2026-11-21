@@ -28,6 +28,13 @@ from PIL import Image, ImageDraw, ImageFont
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
 
+def _font(size: int):
+    try:
+        return ImageFont.truetype(FONT, size)
+    except OSError:  # no DejaVu on this machine
+        return ImageFont.load_default()
+
+
 def _img(b: bytes) -> np.ndarray:
     return np.asarray(Image.open(io.BytesIO(b)).convert("RGB"))
 
@@ -97,8 +104,8 @@ def main() -> None:
         r = json.loads(line)
         if r.get("condition") == tag and r["episode"] == ep:
             scores[(r["kind"], r["frame"])] = r
-    font = ImageFont.truetype(FONT, 15)
-    small = ImageFont.truetype(FONT, 13)
+    font = _font(15)
+    small = _font(13)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with av.open(str(args.out), "w") as c:
         st = c.add_stream("libx264", rate=30)

@@ -22,6 +22,13 @@ from PIL import Image, ImageDraw, ImageFont
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
 
+def _font(size: int):
+    try:
+        return ImageFont.truetype(FONT, size)
+    except OSError:  # no DejaVu on this machine
+        return ImageFont.load_default()
+
+
 def _img(b: bytes) -> Image.Image:
     return Image.open(io.BytesIO(b)).convert("RGB")
 
@@ -45,7 +52,7 @@ def main() -> None:
     fz = np.load(args.run / f"frames_ep{ep:03d}.npz", allow_pickle=True)
     observed = fz["observed"]
     ideal = {int(q): fz["ideal"][i] for i, q in enumerate(fz["ideal_queries"])}
-    font = ImageFont.truetype(FONT, 14)
+    font = _font(14)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     W, H, LAB = 512, 256, 18
     with av.open(str(args.out), "w") as c:
