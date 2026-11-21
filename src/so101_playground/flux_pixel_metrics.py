@@ -147,9 +147,9 @@ def main() -> None:
     if args.lag_sweep:
         for run in args.runs:
             for a in (-2, -1, 0, 1, 2):
-                rows = run_dir(run, metrics, a, horizons=(1, 8, 16, 31), max_queries=6)
+                rows = run_dir(run, metrics, a, horizons=(1, 4, 8, 16, 31), max_queries=6)
                 s = summarize(rows)
-                print(run.name, "align", a, {k: round(v, 4) for k, v in s.items() if k.startswith("pred_obs.l1_scene") or k.startswith("pred_obs.dino_scene")})
+                print(run.name, "align", a, {k: round(v, 4) for k, v in s.items() if k.startswith(("pred_obs.l1_", "pred_obs.dino_"))})
         return
     for run in args.runs:
         rows = run_dir(run, metrics, args.align)

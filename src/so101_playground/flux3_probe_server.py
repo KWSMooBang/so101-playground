@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """FLUX 3 Action server for T004: so101_bench ``scripts/flux3_server.py`` (bench @ 470e09e, imported, not
-edited) with two changes for a shared 24 GB card:
+edited) with two changes to fit a 24 GB card next to Isaac:
 
   * the Qwen3-VL text encoder stays on the CPU (flux-action ``set_text_encoder_offload``); it visits the GPU
     once per new instruction (8.9 GB saved);
@@ -38,6 +38,15 @@ class OffloadPolicy(bench.Policy):
         self.policy.set_text_encoder_offload(True)
         self.checkpoint = args.package
         self.policy.to(self.device).eval()
+        # flux-action's offload still moves the encoder to the GPU to encode a new caption, which does not fit
+        # next to the DiT + VAE on 24 GB. Encode on the CPU (cached per instruction) and move only the contexts.
+        original_contexts = self.policy._contexts
+
+        def cpu_contexts(captions, device, **kwargs):
+            out = original_contexts(captions, torch.device("cpu"), **kwargs)
+            return [(ctx.to(device), ids.to(device)) for ctx, ids in out]
+
+        self.policy._contexts = cpu_contexts
         cfg = self.policy.config
         self.camera_keys = [key.removeprefix("images.") for key in cfg.camera_keys]
         self.client_to_key = dict(zip(args.client_cameras.split(","), cfg.camera_keys, strict=True))

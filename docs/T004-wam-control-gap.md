@@ -5,10 +5,11 @@ Branch `exp/wam-control-gap`. Outputs `/outputs/so101-playground/runs/T004/`. Ro
 
 ## Model
 
-**LaWAM only** (decision L1, 2026-11-21). FLUX 3 Action cannot run closed-loop on GPU 1 alone. GPU 1 is shared
-with other tenants using 4–14 GB, and the FLUX server (13.9 GB bf16 DiT + 2.5 GB VAE + activations, text encoder
-offloaded) plus Isaac (~6 GB) do not fit. The FLUX code (server wrapper with text-encoder offload, LoRA merge,
-pixel/LPIPS/DINOv2 metrics) is committed but has not been run. Weights stay in `envs/flux3/weights/`.
+**LaWAM only** (decision L1, 2026-11-21): all runs on GPU 1, and the FLUX 3 Action arm is deferred. FLUX
+needs the 13.9 GB bf16 DiT + 2.5 GB VAE + activations (est. 17–19 GB with the text encoder offloaded to CPU,
+not measured); with Isaac (~6.2 GB) on the same 24 GB card that is borderline. The FLUX code (server wrapper with
+text-encoder offload, LoRA merge, pixel/LPIPS/DINOv2 metrics) is committed but has not been run. Weights stay in
+`envs/flux3/weights/` (base VAE + text encoder, SO-101 package, bench LoRA raw update 3000; not yet merged).
 
 LaWAM = `5hadytru/so101_bench_LaWAM_full_fine_tune` @ 8df458f (update 45000, 21/39 on the bench val set),
 served by `src/so101_playground/lawam_probe_server.py`. That is a copy of the bench `lawam_server.py` (the
