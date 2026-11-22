@@ -75,6 +75,43 @@ def load_setting(run: Path, scores: list[dict]) -> dict:
     return eps
 
 
+def both(a: dict, b: dict, key: str) -> np.ndarray:
+    """Episode ids (same layout and seed) with at least one sample of `key` in both settings."""
+    return np.array(sorted(e for e in set(a) & set(b) if len(a[e][key]) and len(b[e][key])))
+
+
+def paired(a: dict, b: dict, key: str) -> tuple[dict, dict]:
+    """a, b restricted to the episodes `both` returns, for the episode-paired AUROC bootstrap."""
+    ids = set(both(a, b, key).tolist())
+    return {e: v for e, v in a.items() if e in ids}, {e: v for e, v in b.items() if e in ids}
+
+
+def ratio_stats(eps: dict, base: dict, rng) -> dict:
+    """Normalised effects with the ratio computed inside the bootstrap (numerator and denominator from the same
+    episode resample), so the CI includes the denominator's uncertainty."""
+    out = {}
+    specs = {
+        # d_fault - d_nominal as % of the none-level d_fault (paired episodes of cond and none)
+        "pct_diff@1_of_none_d_fault": ("diff@1", base, "d_fault@1", True),
+        # d_fault - d_nominal as % of the fault's own effect d(fault obs, nominal obs), within the condition
+        "pct_diff@1_of_d_obs_nom": ("diff@1", eps, "d_obs_nom@1", False),
+    }
+    for name, (num, den_eps, den, cross) in specs.items():
+        ids = both(eps, den_eps, num) if cross else np.array(sorted(e for e in eps if len(eps[e][num])))
+        ids = np.array([e for e in ids if len(den_eps[e][den])])
+        if len(ids) < 2:
+            continue
+        f = lambda p, n=num, d=den, de=den_eps: 100 * qmean(eps, n, p) / qmean(de, d, p)
+        out[name] = f(ids)
+        out[name + "_ci95"] = boot(f, ids, rng)
+    ids = both(eps, base, "e_pred@1")
+    if len(ids) >= 2:
+        f = lambda p: 100 * (qmean(eps, "e_pred@1", p) - qmean(base, "e_pred@1", p)) / qmean(base, "e_pred@1", p)
+        out["pct_e_pred@1_minus_none"] = f(ids)
+        out["pct_e_pred@1_minus_none_ci95"] = boot(f, ids, rng)
+    return out
+
+
 SERIES = ([f"{m}@{k}{reg}" for m in ("e_pred", "e_static", "d_fault", "d_nominal", "diff", "d_obs_nom")
            for k in KS for reg in REGIONS] + ["e_track", "applied_err"])
 
@@ -97,21 +134,23 @@ def summarize(root: Path, tags, scores_path: Path) -> dict:
             s[f"{key}_ci95"] = boot(lambda p, k=key: qmean(eps, k, p), ids, rng)
             s[f"n:{key}"] = int(sum(len(eps[e][key]) for e in ids))
             if base is not None and t != "none" and any(len(base[e][key]) for e in base):
-                common = np.array(sorted(set(ids) & set(base)))
+                common = both(eps, base, key)  # episodes with samples of this metric in both settings
                 f = lambda p, k=key: qmean(eps, k, p) - qmean(base, k, p)
                 s[f"{key}_minus_none"] = f(common)
                 s[f"{key}_minus_none_ci95"] = boot(f, common, rng)
+        if base is not None and t != "none":
+            s.update(ratio_stats(eps, base, rng))
         summary[t] = s
     a0, a1 = data.get("gain2-a0"), data.get("gain2-a1")
     for k in KS:
         for reg in REGIONS:
             key = f"e_pred@{k}{reg}"
             if a0 and a1:
-                summary["gain2-a1"].setdefault("reward_vs_a0", {})[key] = reward_auroc(a0, a1, rng, key=key)
+                summary["gain2-a1"].setdefault("reward_vs_a0", {})[key] = reward_auroc(*paired(a0, a1, key), rng, key=key)
             if a1 and base:
-                summary["gain2-a1"].setdefault("reward_a1_vs_none", {})[key] = reward_auroc(a1, base, rng, key=key)
+                summary["gain2-a1"].setdefault("reward_a1_vs_none", {})[key] = reward_auroc(*paired(a1, base, key), rng, key=key)
             if a0 and base:
-                summary["gain2-a0"].setdefault("reward_vs_none", {})[key] = reward_auroc(a0, base, rng, key=key)
+                summary["gain2-a0"].setdefault("reward_vs_none", {})[key] = reward_auroc(*paired(a0, base, key), rng, key=key)
     return summary
 
 

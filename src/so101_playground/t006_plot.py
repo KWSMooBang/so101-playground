@@ -2,8 +2,8 @@
 """T006 figure: InternW0-Δ vs LaWAM on the T004nom and T005 designs.
 
 The two models score in different spaces (InternW0: Wan2.2 VAE latent MSE on ticks 4–16; LaWAM: LAM DINOv3
-token MSE at +35), so every value is indexed to the model's own scale: % of its `none` e_pred, or a fraction
-of the fault's own effect d(fault obs, nominal obs). LaWAM numbers come from results.tsv (T004nom-lawam-*,
+token MSE at +35), so each model gets its own row in its own units, with 95% CIs. Percentages are point labels only
+(their CIs, computed inside the bootstrap, are in t006_analysis's summary.json and the doc). LaWAM numbers come from results.tsv (T004nom-lawam-*,
 T005-*); InternW0 from runs/T006/{nom,oracle}/internw0/summary.json (t006_analysis.py).
 
     python -m so101_playground.t006_plot --tsv results.tsv --t006 runs/T006 --out T006_internw0_vs_lawam.png
@@ -75,57 +75,55 @@ def _style(ax):
 
 
 def plot(models: dict, out: Path) -> None:
+    """One row per model, raw units with 95% CIs (each model in its own metric space; no shared axis).
+    Percentages are point labels only: (a) d_fault − d_nominal as % of the fault's own effect
+    d(fault obs, nominal obs); (b) Δ e_pred as % of the model's none e_pred. Their CIs are in the doc."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4.2))
     colors = {"LaWAM": BLUE, "InternW0-Δ": ORANGE}
-    off = {"LaWAM": -0.12, "InternW0-Δ": 0.12}
-    for name, m in models.items():
+    units = {"LaWAM": "LAM token MSE @+35", "InternW0-Δ": "VAE latent MSE, ticks 4–16"}
+    fig, axes = plt.subplots(len(models), 2, figsize=(11, 3.6 * len(models)), squeeze=False)
+    for r, (name, m) in enumerate(models.items()):
         c = colors[name]
+        ax = axes[r, 0]
         nom = m["nom"]
-        base = nom["none"]["d_fault"]
         xs = [i for i, k in enumerate(CONDS) if k in nom and nom[k]["diff"]]
-        # (a) d_fault - d_nominal, % of the model's none-level d_fault
-        y = [100 * nom[CONDS[i]]["diff"][0] / base for i in xs]
-        lo = [100 * nom[CONDS[i]]["diff"][1] / base for i in xs]
-        hi = [100 * nom[CONDS[i]]["diff"][2] / base for i in xs]
-        px = [i + off[name] for i in xs]
-        axes[0].vlines(px, lo, hi, color=c, lw=2)
-        axes[0].plot(px, y, "o", color=c, ms=8, mec="white", mew=1.5, label=name)
-        # (b) the same as a fraction of the fault's own effect d(fault obs, nominal obs)
-        fx = [i for i in xs if CONDS[i] != "none" and nom[CONDS[i]]["d_obs_nom"]]
-        fy = [100 * nom[CONDS[i]]["diff"][0] / nom[CONDS[i]]["d_obs_nom"] for i in fx]
-        axes[1].bar([i + off[name] for i in fx], fy, width=0.22, color=c, label=name)
-        # (c) oracle: delta e_pred vs none, % of none e_pred
+        y = [nom[CONDS[i]]["diff"][0] for i in xs]
+        ax.vlines(xs, [nom[CONDS[i]]["diff"][1] for i in xs], [nom[CONDS[i]]["diff"][2] for i in xs], color=c, lw=2)
+        ax.plot(xs, y, "o", color=c, ms=8, mec="white", mew=1.5)
+        for i, v in zip(xs, y):
+            k = CONDS[i]
+            if k != "none" and nom[k]["d_obs_nom"]:
+                ax.annotate(f"{100 * v / nom[k]['d_obs_nom']:.0f}% of fault effect", (i, v), xytext=(9, 0),
+                            textcoords="offset points", va="center", fontsize=8, color=INK2)
+        ax.set_xticks(range(len(CONDS)), CONDS)
+        ax.set_xlim(-0.4, len(CONDS) - 0.2)
+        ax.set_ylabel(f"{name}\nd_fault − d_nominal\n({units[name]})", color=INK, fontsize=9)
         ora = m["oracle"]
-        ax_ = [a for a in sorted(k for k in ora if k != "none")]
-        oy = [100 * ora[a][0] / ora["none"] for a in ax_]
-        olo = [100 * ora[a][1] / ora["none"] for a in ax_]
-        ohi = [100 * ora[a][2] / ora["none"] for a in ax_]
-        # points + CI only: InternW0 has no alpha=0.5 run, so no line is drawn between settings
-        oxp = [a + off[name] / 3 for a in ax_]
-        axes[2].vlines(oxp, olo, ohi, color=c, lw=2)
-        axes[2].plot(oxp, oy, "o", color=c, ms=8, mec="white", mew=1.5, label=name)
-    for ax in axes:
-        _style(ax)
-    axes[0].set_xticks(range(len(CONDS)), CONDS)
-    axes[0].set_ylabel("d_fault − d_nominal  (% of none d_fault)", color=INK, fontsize=9)
-    axes[0].set_title("Nominal replay: > 0 = prediction sits on the fault-free side\n(95% CI, query-paired, episode bootstrap)",
-                      color=INK, fontsize=9.5)
-    axes[1].set_xticks(range(len(CONDS))[1:], CONDS[1:])
-    axes[1].set_ylabel("(d_fault − d_nominal) / d(fault obs, nominal obs)  (%)", color=INK, fontsize=9)
-    axes[1].set_title("Share of the fault's own visual effect\nthat the prediction does not follow", color=INK, fontsize=9.5)
-    axes[2].set_xticks((0, 0.5, 1, 1.5))
-    axes[2].set_xlabel("oracle stiffness correction α (1 = exact inverse)", color=INK2, fontsize=8)
-    axes[2].set_ylabel("raw e_pred − none  (% of none e_pred)", color=INK, fontsize=9)
-    axes[2].set_title("gain2 oracle (no replay): raw e_pred vs α\n(95% CI, episode-paired; InternW0 ran α ∈ {0, 1, 1.5})", color=INK, fontsize=9.5)
-    for ax in axes:
-        ax.legend(frameon=False, fontsize=8, labelcolor=INK, loc="upper left" if ax is axes[0] else "best")
-    fig.suptitle("T006: InternW0-Δ (VAE latent, ticks 4–16) vs LaWAM (LAM tokens, +35), 8 ep per point",
-                 color=INK, fontsize=11)
+        al = sorted(k for k in ora if k != "none")
+        ax2 = axes[r, 1]
+        oy = [ora[a][0] for a in al]
+        ax2.vlines(al, [ora[a][1] for a in al], [ora[a][2] for a in al], color=c, lw=2)
+        ax2.plot(al, oy, "o", color=c, ms=8, mec="white", mew=1.5)
+        for a, v in zip(al, oy):
+            ax2.annotate(f"{100 * v / ora['none']:+.0f}%", (a, v), xytext=(9, 0), textcoords="offset points",
+                         va="center", fontsize=8, color=INK2)
+        ax2.set_xticks((0, 0.5, 1, 1.5))
+        ax2.set_xlim(-0.15, 1.75)
+        ax2.set_ylabel(f"{name}\nraw e_pred − none\n({units[name]})", color=INK, fontsize=9)
+        for a_ in (ax, ax2):
+            _style(a_)
+    axes[0, 0].set_title("Nominal replay: > 0 = prediction on the fault-free side\n(95% CI; label = share of the fault's own effect)",
+                         color=INK, fontsize=9.5)
+    axes[0, 1].set_title("gain2 oracle, no replay: raw e_pred vs α\n(95% CI, episode-paired; label = % of none e_pred)",
+                         color=INK, fontsize=9.5)
+    axes[-1, 0].set_xlabel("injected gap", color=INK2, fontsize=8)
+    axes[-1, 1].set_xlabel("oracle correction α (1 = exact inverse; InternW0: α ∈ {0, 1, 1.5})",
+                           color=INK2, fontsize=8)
+    fig.suptitle("T006: InternW0-Δ vs LaWAM, 8 ep per point (each row in its model's own units)", color=INK, fontsize=11)
     fig.tight_layout()
     fig.savefig(out, dpi=150)
 

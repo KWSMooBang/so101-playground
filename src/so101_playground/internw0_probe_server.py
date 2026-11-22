@@ -19,8 +19,10 @@ What InternW0-Δ predicts (repo ``src/wam``):
   → prediction: L̂1 = L0 + d̂1 and L̂2 = L0 + d̂1 + d̂2 in the Wan2.2 VAE latent space.
 
 Extra behaviour:
-  * Sessions are keyed by (client run dir, episode) so several Isaac clients can share one server; a session
-    restarts when its first frame comes again (a re-run of the same episode).
+  * Sessions, predictions and observed latents are keyed by (client run dir, client attempt id, episode[, frame]),
+    so several Isaac clients (even two on the same run dir) never share memory or overwrite each other's
+    predictions. The client sends ``trace.dir = "<run dir>#<attempt>"`` (wam_gap_eval.py --model internw0) and
+    ``dir`` + ``attempt`` on /iw_score. A session also restarts when its first frame comes again.
   * The text encoder (UMT5-XXL, 11 GB) stays on the CPU; each instruction is encoded once and cached.
   * Every /act keeps (L0, d̂1, d̂2, the query canvas) under (dir, episode, frame).
   * ``POST /iw_score`` {"dir", "episode", "frame", "kind": observed|nominal, "offsets": [4, 8, ...],
@@ -258,7 +260,7 @@ class Policy:
         episode = payload.get("episode")
         trace = payload.get("trace") or {}
         frame = trace.get("frame")
-        key = (str(trace.get("dir", "")), episode)
+        key = (str(trace.get("dir", "")), episode)  # trace.dir = "<run dir>#<attempt>"
         sess = self.sessions.get(key)
         if sess is None or self.session_first.get(key) == frame:
             sess = self.session_cls(self.runtime, self.session_cfg)  # new episode: fresh memory
@@ -285,7 +287,7 @@ class Policy:
         while len(self.queries) > 64:
             self.queries.popitem(last=False)
         if self.save_latents_dir is not None:
-            d = self.save_latents_dir / Path(key[0]).name
+            d = self.save_latents_dir / Path(key[0].split("#")[0]).name
             d.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(d / f"ep{episode:03d}_f{frame:05d}_pred.npz", l0=l0.half().cpu().numpy(),
                                 pred=rec["pred"].half().cpu().numpy())
@@ -294,7 +296,8 @@ class Policy:
     # ------------------------------------------------------------------ /iw_score
     @torch.inference_mode()
     def score(self, payload: dict[str, Any]) -> dict[str, Any]:
-        qkey = (str(payload.get("dir", "")), payload["episode"], payload["frame"])
+        run_dir = str(payload.get("dir", ""))
+        qkey = (f"{run_dir}#{payload.get('attempt')}", payload["episode"], payload["frame"])
         rec = self.queries.get(qkey)
         if rec is None:
             raise KeyError(f"no prediction for {qkey}")
@@ -306,7 +309,7 @@ class Policy:
         z = self._latents(canvases)  # [C, 1 + n/4, h, w]
         kind = str(payload.get("kind", "observed"))
         out: dict[str, Any] = {k: payload.get(k) for k in ("condition", "attempt", "episode", "frame", "replay_mode")}
-        out.update(kind=kind, dir=qkey[0], offsets=offsets, l0_check=_mse(z[:, 0], rec["l0"]))
+        out.update(kind=kind, dir=run_dir, offsets=offsets, l0_check=_mse(z[:, 0], rec["l0"]))
         n = min(int(z.shape[1]) - 1, self.n_future)
         for k in range(1, n + 1):
             pred, obs = rec["pred"][:, k - 1], z[:, k]
@@ -325,7 +328,7 @@ class Policy:
                     sfx = f"@{k}" if rname == "all" else f"@{k}_{rname}"
                     out["d_obs_nom" + sfx] = _mse(o[:, rs], obs[:, rs])
         if self.save_latents_dir is not None:
-            d = self.save_latents_dir / Path(qkey[0]).name
+            d = self.save_latents_dir / Path(run_dir).name
             d.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(d / f"ep{qkey[1]:03d}_f{qkey[2]:05d}_{kind}{len(offsets)}.npz",
                                 z=z.half().cpu().numpy())

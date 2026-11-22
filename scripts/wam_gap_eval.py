@@ -325,11 +325,14 @@ def main() -> None:
     cameras = {k.replace("camera_", ""): {} for k in u.scene.keys() if k.startswith("camera_")}
     print(f"[T004] env ready in {time.time() - t0:.1f}s; control_dt={control_dt:.4f}; stiffness={stiffness}", flush=True)
 
+    attempt = uuid.uuid4().hex[:12]  # tags this process's rows in append-only logs
     policy = MolmoAct2RemotePolicy(
         device=u.device, cameras=cameras, host=args.policy_host, port=args.policy_port,
         action_horizon=args.action_horizon, camera_names=["overhead", "wrist"], image_size=(640, 480),
         max_joint_step_deg=15.0, joint_frame="lerobot", history_ticks=args.history_ticks,
-        prediction_trace_dir=str(out),
+        # InternW0: the server keys its per-episode session by trace.dir, so it carries this process's attempt
+        # id (two clients on the same run dir never share memory); other models need the real dir.
+        prediction_trace_dir=f"{out}#{attempt}" if args.model == "internw0" else str(out),
     )
     policy.connect()
     last_chunk = {}
@@ -350,7 +353,6 @@ def main() -> None:
     for j, name in enumerate(robot.joint_names):
         if name in nominal_stiffness_cfg:
             nominal_stiffness[:, j] = float(nominal_stiffness_cfg[name])
-    attempt = uuid.uuid4().hex[:12]  # tags this process's rows in append-only logs
     tag = args.run_tag or args.condition
     summary_path = out / "episodes.jsonl"
     done_eps = set()
@@ -439,6 +441,9 @@ def main() -> None:
                 iw_png[step] = [_png_b64(_policy_frame(policy, obs["visual"], c)) for c in ("overhead", "wrist")]
                 for k in [k for k in iw_png if k < step - 40]:
                     del iw_png[k]
+            # Not on the terminating tick: env.step auto-resets on termination, so that tick's obs is the reset scene
+            # (T004 review #5), not the outcome. Such queries (horizon end == last tick) are dropped and counted in
+            # the T006 doc; every other query whose horizon ends after the episode is unscorable anyway.
             if args.model == "internw0" and step in pending and not ended:
                 for qs in pending.pop(step):
                     offs = IW_OFFSETS[: (step - qs) // 4]

@@ -33,7 +33,8 @@ submodule is not edited. Start it with `scripts/run_internw0_server.sh`. On GPU 
 
 The UMT5-XXL text encoder (11 GB) stays on the CPU and each instruction is encoded once (2.6 s). Without that
 the model's own `__init__` moves it to the GPU and OOMs. Sessions (anchor + recent memory frames) are keyed by
-(client run dir, episode), so parallel clients never share memory.
+(client run dir, client attempt id, episode) since the review (see Review corrections #1), so parallel clients
+never share memory.
 
 ### What InternW0-Δ predicts, and e_pred
 
@@ -89,8 +90,8 @@ seeds), and d_fault − d_nominal is paired per query.
 |---|---|---|---|---|---|---|---|---|---|---|
 | none | 8 | 8/8 | 0.53 | 0.1144 | — | 0.1109 | 0.1127 | −0.0018 [−0.0063, 0.0016] (floor) | — | 0.013 [0.007, 0.021] |
 | gain | 8 | 8/8 | 0.98 | 0.1459 | +0.031 [0.021, 0.040] | 0.1512 | 0.1341 | **+0.0171 [0.0087, 0.0233]** | +0.019 [0.014, 0.024] | 0.119 [0.108, 0.131] |
-| gain2 | 8 | 5/8 | 1.58 | 0.1895 | +0.075 [0.065, 0.084] | 0.1906 | 0.1341 | **+0.0565 [0.0490, 0.0633]** | +0.058 [0.048, 0.068] | 0.209 [0.190, 0.227] |
-| latency6 | 8 | 7/8 | 2.05 | 0.2102 | +0.096 [0.079, 0.112] | 0.2128 | 0.1313 | **+0.0815 [0.0695, 0.0948]** | +0.083 [0.072, 0.095] | 0.245 [0.225, 0.265] |
+| gain2 | 8 | 5/8 | 1.58 | 0.1895 | +0.075 [0.066, 0.084] | 0.1906 | 0.1341 | **+0.0565 [0.0486, 0.0634]** | +0.058 [0.048, 0.068] | 0.209 [0.190, 0.226] |
+| latency6 | 8 | 7/8 | 2.05 | 0.2102 | +0.096 [0.080, 0.111] | 0.2128 | 0.1313 | **+0.0815 [0.0701, 0.0945]** | +0.083 [0.072, 0.095] | 0.245 [0.225, 0.266] |
 
 Paired queries: 100 / 108 / 161 / 147. e_static@1 (no-motion baseline) is 0.36–0.37 in every condition, so
 the prediction explains ~70% of the observed latent change in `none`.
@@ -99,16 +100,18 @@ the prediction explains ~70% of the observed latent change in `none`.
   every fault it is positive and clears zero, with a dose-response: gain ×0.5 +0.017 → gain2 ×0.25 +0.057 →
   latency6 +0.082. Δ vs none clears zero for all three.
 - **Share of the fault's own effect the prediction does not follow:** (d_fault − d_nominal) /
-  d(fault obs, nominal obs) = **14% (gain), 27% (gain2), 33% (latency6)**; LaWAM 6% / 10% / 17%.
+  d(fault obs, nominal obs) = **14% [7, 20] (gain), 27% [24, 31] (gain2), 33% [30, 37] (latency6)**; LaWAM
+  6% / 10% / 17% (point estimates; LaWAM's per-episode data were not re-bootstrapped). The % CIs come from a
+  bootstrap with the ratio computed inside it (numerator and denominator from the same episode resample).
 - **The wrist half carries most of it.** diff@1 is +0.031 / +0.100 / +0.136 on the wrist vs +0.004 / +0.013 /
   +0.027 overhead; all CIs exclude 0. The wrist camera sees the arm's own lag directly (FLUX's wrist half was
   the sensitive one too).
 - **Second horizon (ticks 20–32).** The signal is weaker: diff@2 +0.005 [−0.005, 0.013] (gain), +0.022
-  [0.013, 0.030] (gain2), +0.037 [0.027, 0.044] (latency6); share of the fault's effect 4% / 9% / 11%. By then
+  [0.013, 0.030] (gain2), +0.037 [0.026, 0.044] (latency6); share of the fault's effect 4% / 9% / 11%. By then
   the next chunk, issued after the policy saw the faulty first half, is running in both branches, and the
   prediction made at s cannot know those commands.
-- **Raw e_pred rises much more than LaWAM's.** Δ vs none is +27% / +66% / +84% of the none level (LaWAM +7% /
-  +12% / +29%), and every CI clears zero, including the mild `gain`.
+- **Raw e_pred rises much more than LaWAM's.** Δ vs none is +27% [19, 35] / +66% [56, 75] / +84% [68, 99] of
+  the none level (LaWAM +7% / +12% / +29%), and every CI clears zero, including the mild `gain`.
 
 ### 2. Oracle stiffness correction (T005 design, gain2, no replay), e_pred@1
 
@@ -148,6 +151,34 @@ the fault-free one.
 - **Noise floor.** The two `none` runs (with / without replay) give e_pred@1 0.114 vs 0.107: a run-to-run
   spread of ~0.007, smaller than every fault effect above except α1 vs none.
 
+### Review corrections (2026-11-22, no new runs; numbers recomputed from the logs)
+
+1. **Server keys and parallel clients.** Sessions, predictions and observed latents used to be keyed by
+   (run dir, episode) only. Two clients on the same run dir could therefore have reset each other's memory or
+   overwritten each other's predictions. Checked in the logs:
+   - The two `oracle/none` logs (`none.w1.log`, `none.w2.log`) come from a deliberate manual split by
+     `--episode_offset`: episodes 0–3 and 4–7, attempts 81eadd5649a6 and 772c050f1538. The episode sets are
+     disjoint, so their keys could not collide.
+   - Across all 4636 score rows, 0 keys carry more than one attempt, and no (run dir, episode) was scored by two
+     attempts. **No contamination; no number changes.**
+   - Fixed for future runs: the client sends `trace.dir = "<run dir>#<attempt>"` and the server keys everything
+     by (run dir, attempt, episode[, frame]).
+2. **Queries whose horizon ends on the terminating tick.** These are still excluded, on purpose. On that tick
+   `env.step` has already auto-reset, so the returned frame is the reset scene, not the outcome (T004 review #5).
+   Including it would score against a wrong frame. Counts, latent 1 and latent 2 each:
+   - gain 1 (ep7);
+   - gain2-a1 2 (ep1, ep7);
+   - gain2-a1.5 2 (ep1, ep2);
+   - 0 in every other setting.
+
+   All are successful episodes, out of 198–424 scored queries per setting. Queries whose horizon runs past the
+   end are unscorable in any case.
+3. **Paired bootstraps.** Δ vs none and the AUROC bootstrap now use only episodes that have samples of the
+   metric in both settings. Every episode had samples of every metric, so the episode sets did not change. All
+   point estimates and AUROCs are identical; bootstrap CIs moved by ≤ 0.003 (RNG stream order).
+4. **Normalised CIs.** The figure is now in each model's raw units with raw-unit CIs, one row per model; the %
+   values are point labels only. The % CIs quoted above are computed inside the bootstrap.
+
 ## Comparison with LaWAM
 
 | | LaWAM (T004nom / T005) | InternW0-Δ (T006) |
@@ -161,8 +192,8 @@ the fault-free one.
 | gain2 oracle: α1.5 worse than α1 | yes | yes |
 | AUROC α0 vs α1 (query / window4 / episode) | 0.69 / 0.71 / 0.77 | **0.89 / 0.93 / 1.00** |
 
-The two models use different metric spaces. The figure therefore puts every value on the model's own scale:
-% of its `none` level, or a fraction of d(fault obs, nominal obs).
+The two models use different metric spaces, so the figure gives each model its own row in raw units
+(95% CIs). Percentages appear as point labels only.
 
 ## Read
 
