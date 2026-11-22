@@ -8,7 +8,7 @@ One top-view PNG per layout + one PDF with all 30 (and an index HTML), in docs/h
   * 5 cm grid in the measuring frame: fwd = cm from the pan axis away from the robot, side = cm to the robot's
     left (= your right as you face the robot);
   * a table of fwd / side / heading for every item, and the sim overhead render of the start scene when
-    present (docs/home_objects/sim_frames/trialNN_overhead.png, written by the Phase A run).
+    present (docs/home_objects/sim_frames/trialNN_overhead.jpg, written by the Phase A run).
 
     python scripts/t007_layout_sheets.py     # needs numpy + matplotlib (isaac venv)
 """
@@ -187,7 +187,7 @@ def page(row, lay):
                       "seen from above, from 'fwd' (0 = pointing away from the robot, +90 = pointing to\n"
                       "your left, -90 = to your right). Bin heading is for its long side.",
             fontsize=6.5, va="top", transform=tx.transAxes)
-    img = OUT / "sim_frames" / f"trial{row['trial_id']:02d}_overhead.png"
+    img = OUT / "sim_frames" / f"trial{row['trial_id']:02d}_overhead.jpg"
     if img.exists():
         ia = fig.add_axes([0.60, 0.05, 0.38, 0.33])
         ia.imshow(plt.imread(img))
