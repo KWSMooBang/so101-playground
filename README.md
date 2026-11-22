@@ -9,7 +9,7 @@ real SO-101 (overhead + wrist cameras) remotely. See `RESEARCH.md` for goals and
 third_party/so101_bench   submodule, github.com/5hadytru/so101_bench @ 470e09e (main, 2026-11-04)
 third_party/lerobot       submodule, github.com/huggingface/lerobot  @ v0.7.0
 src/so101_playground/     our package
-scripts/                  our scripts (isaac_smoke.py, teleop.sh, sim_alignment.py)
+scripts/                  our scripts (isaac_smoke.py, teleop.sh, sim_alignment.py, overhead_align.py)
 configs/real_robot/       our follower's sim alignment (bench joint frame)
 envs/isaac/               Isaac env: setup_isaac.sh, env.sh, Vulkan ICD manifest
 envs/lerobot/             LeRobot env: setup_lerobot.sh, env.sh, udev/ (stable /dev/so101_* names)
@@ -92,6 +92,23 @@ envs/lerobot/.venv/bin/python scripts/sim_alignment.py live                    #
 
 The alignment stores the motors' homing offsets; **do not re-run LeRobot calibration on the follower**,
 or the bench runner refuses to start and the alignment has to be measured again.
+
+### Overhead camera alignment
+
+The overhead camera should see the scene as the bench's canonical overhead camera does: about 52 cm in
+front of the robot base, 46 cm above the table, tilted 51 deg from vertical, 74 deg horizontal FOV.
+`scripts/overhead_align.py` draws the robot base target and the object area (5 cm grid) from the bench's
+own camera model over the live feed (a tkinter window; Save/Quit buttons). It also rewrites
+`outputs/camera_check/overhead_align_latest*.jpg` every second.
+
+```bash
+envs/lerobot/.venv/bin/python scripts/overhead_align.py
+```
+
+Aligned 2026-11-22: the robot base and two marks at the object area's near corners (28 cm in front of the
+base axis, ±19.5 cm) land within about 15 px of the targets. The camera's "86 deg" spec fits a diagonal
+FOV (about 73 deg horizontal), so no crop is needed. Keep the camera fixed afterwards: the bench runner
+rejects more than 3 px drift against a reference frame.
 
 ### isaac env
 
