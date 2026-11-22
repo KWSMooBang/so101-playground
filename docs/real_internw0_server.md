@@ -96,13 +96,13 @@ Results (`/outputs/so101-playground/runs/real_robot/internw0_server/selftest_112
 ## Running server
 
 Started from a code snapshot so that it does not depend on this worktree:
-`/outputs/so101-playground/runs/real_robot/internw0_server/code_<commit>/internw0_probe_server.py`.
+`/outputs/so101-playground/runs/real_robot/internw0_server/code_4815e79/internw0_probe_server.py`.
 
 ```bash
 # start (GPU server)
 W=/workspace/so101-playground/.claude/worktrees/wam-internw0/envs/internw0
 D=/outputs/so101-playground/runs/real_robot/internw0_server
-SRC=$D/code_<commit>/internw0_probe_server.py   # or src/so101_playground/internw0_probe_server.py in a checkout
+SRC=$D/code_4815e79/internw0_probe_server.py   # or src/so101_playground/internw0_probe_server.py in a checkout
 T=$(date +%m%d_%H%M)
 CUDA_VISIBLE_DEVICES=0 WAM_CHECKPOINT_ROOT=$W/weights/checkpoints DIFFSYNTH_SKIP_DOWNLOAD=true HF_HUB_OFFLINE=1 \
   setsid nohup $W/InternW0-Delta/.venv/bin/python $SRC \
@@ -125,4 +125,11 @@ ssh -N -L 8004:localhost:8004 <gpu-server>
 envs/lerobot/.venv/bin/python scripts/policy_runner.py --policy internw0 --instruction "..."
 ```
 
-Current instance: see "Current instance" below (PID, log).
+## Current instance
+
+Started on 2026-11-22 at 23:42 from commit 4815e79 (snapshot `code_4815e79/`).
+- **PID 3607529** (its own session via `setsid`), on GPU 0, at `127.0.0.1:8004`.
+- Log: `/outputs/so101-playground/runs/real_robot/internw0_server/server_1122_2342.log`.
+- Log dir: `/outputs/so101-playground/runs/real_robot/internw0_server/run_1122_2342/`
+  (`real/`, `server_requests.jsonl`).
+- Stop it with `kill 3607529`.
