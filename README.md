@@ -9,7 +9,7 @@ real SO-101 (overhead + wrist cameras) remotely. See `RESEARCH.md` for goals and
 third_party/so101_bench   submodule, github.com/5hadytru/so101_bench @ 470e09e (main, 2026-11-04)
 third_party/lerobot       submodule, github.com/huggingface/lerobot  @ v0.7.0
 src/so101_playground/     our package
-scripts/                  our scripts (isaac_smoke.py, teleop.sh, sim_alignment.py, overhead_align.py)
+scripts/                  our scripts (isaac_smoke.py, teleop.sh, record.sh, sim_alignment.py, overhead_align.py)
 configs/real_robot/       our follower's sim alignment (bench joint frame)
 envs/isaac/               Isaac env: setup_isaac.sh, env.sh, Vulkan ICD manifest
 envs/lerobot/             LeRobot env: setup_lerobot.sh, env.sh, udev/ (stable /dev/so101_* names)
@@ -109,6 +109,28 @@ Aligned 2026-11-22: the robot base and two marks at the object area's near corne
 base axis, ±19.5 cm) land within about 15 px of the targets. The camera's "86 deg" spec fits a diagonal
 FOV (about 73 deg horizontal), so no crop is needed. Keep the camera fixed afterwards: the bench runner
 rejects more than 3 px drift against a reference frame.
+
+### Recording
+
+`scripts/record.sh NAME "TASK"` records teleoperated episodes with `lerobot-record` into
+`outputs/datasets/NAME` (local only, no Hub upload; an existing NAME gets the new episodes appended). The
+format matches the bench real dataset (`5hadytru/so101_bench_real`): LeRobot v3.0, 30 fps, AV1 480x640
+`observation.images.{wrist,overhead}`, 6-D `.pos` state and action. Only `robot_type` differs
+(`so_follower` from LeRobot 0.7.0, `so101_follower` in the bench's). Device paths and arm arguments are
+shared with `teleop.sh` in `scripts/so101_devices.sh`.
+
+```bash
+scripts/record.sh pilot "Place the pen in the plastic bin" --dataset.num_episodes=3
+```
+
+It waits for Enter, then records right away. Keys work in any window: Right arrow ends the episode (or the
+reset) early, Left arrow discards and re-records it, Esc stops. Episodes run up to 60 s, resets up to 30 s.
+lerobot parses CLI values as YAML (`a: b` becomes a dict), so the script passes the task quoted.
+
+Pilot 2026-11-22: 3 episodes of 20-24 s, 29.9 Hz with no tick over budget, streaming AV1 encoding, 33 MB.
+The `.pos` values are in our follower's calibration, not the bench arm's (`REAL_SO101_CALIBRATION`).
+Through our sim alignment they differ by about 1-3 units per joint (wrist_roll scale about 5%), so convert
+them before mixing with bench data.
 
 ### isaac env
 
