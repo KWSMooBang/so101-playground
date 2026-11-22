@@ -105,8 +105,10 @@ def plot(models: dict, out: Path) -> None:
         oy = [100 * ora[a][0] / ora["none"] for a in ax_]
         olo = [100 * ora[a][1] / ora["none"] for a in ax_]
         ohi = [100 * ora[a][2] / ora["none"] for a in ax_]
-        axes[2].fill_between(ax_, olo, ohi, color=c, alpha=0.15, lw=0)
-        axes[2].plot(ax_, oy, color=c, lw=2, marker="o", ms=7, mec="white", mew=1.5, label=name)
+        # points + CI only: InternW0 has no alpha=0.5 run, so no line is drawn between settings
+        oxp = [a + off[name] / 3 for a in ax_]
+        axes[2].vlines(oxp, olo, ohi, color=c, lw=2)
+        axes[2].plot(oxp, oy, "o", color=c, ms=8, mec="white", mew=1.5, label=name)
     for ax in axes:
         _style(ax)
     axes[0].set_xticks(range(len(CONDS)), CONDS)
@@ -119,9 +121,9 @@ def plot(models: dict, out: Path) -> None:
     axes[2].set_xticks((0, 0.5, 1, 1.5))
     axes[2].set_xlabel("oracle stiffness correction α (1 = exact inverse)", color=INK2, fontsize=8)
     axes[2].set_ylabel("raw e_pred − none  (% of none e_pred)", color=INK, fontsize=9)
-    axes[2].set_title("gain2 oracle (no replay): raw e_pred vs α\n(95% CI, episode-paired)", color=INK, fontsize=9.5)
+    axes[2].set_title("gain2 oracle (no replay): raw e_pred vs α\n(95% CI, episode-paired; InternW0 ran α ∈ {0, 1, 1.5})", color=INK, fontsize=9.5)
     for ax in axes:
-        ax.legend(frameon=False, fontsize=8, labelcolor=INK)
+        ax.legend(frameon=False, fontsize=8, labelcolor=INK, loc="upper left" if ax is axes[0] else "best")
     fig.suptitle("T006: InternW0-Δ (VAE latent, ticks 4–16) vs LaWAM (LAM tokens, +35), 8 ep per point",
                  color=INK, fontsize=11)
     fig.tight_layout()
