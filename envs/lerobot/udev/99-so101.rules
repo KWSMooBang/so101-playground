@@ -1,0 +1,21 @@
+# Stable device names for the home-desktop SO-101 setup.
+# Install: envs/lerobot/udev/install_udev.sh   (copies this file to /etc/udev/rules.d/, needs sudo)
+#
+#   /dev/so101_leader          leader arm   (Feetech board, CH343, serial 5CBC452337)
+#   /dev/so101_follower        follower arm (Feetech board, CH343, serial 5CBC453103)
+#   /dev/so101_cam_wrist       wrist camera    = hub port .4.2
+#   /dev/so101_cam_overhead    overhead camera = hub port .4.3
+#
+# Arms are matched by USB serial, so any port works.
+#
+# Both cameras are the same module (1e45:0209) with the SAME serial (CN02KX4NLG0004ABK00), so
+# /dev/v4l/by-id collapses them into one link. They are told apart by the physical port of the 7-port
+# VIA hub instead: ".4.2"/".4.3" are the downstream chip's ports 2 and 3. The pattern ignores which PC
+# port the hub is in, but swapping the two camera cables between hub ports swaps the names, so keep each
+# camera on its marked hub port. ATTR{index}=="0" selects the capture node, not the metadata node.
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5CBC452337", SYMLINK+="so101_leader"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5CBC453103", SYMLINK+="so101_follower"
+
+SUBSYSTEM=="video4linux", ATTR{index}=="0", KERNELS=="*.4.2", ATTRS{idVendor}=="1e45", ATTRS{idProduct}=="0209", SYMLINK+="so101_cam_wrist"
+SUBSYSTEM=="video4linux", ATTR{index}=="0", KERNELS=="*.4.3", ATTRS{idVendor}=="1e45", ATTRS{idProduct}=="0209", SYMLINK+="so101_cam_overhead"

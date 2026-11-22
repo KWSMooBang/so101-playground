@@ -9,9 +9,10 @@ real SO-101 (overhead + wrist cameras) remotely. See `RESEARCH.md` for goals and
 third_party/so101_bench   submodule, github.com/5hadytru/so101_bench @ 470e09e (main, 2026-11-04)
 third_party/lerobot       submodule, github.com/huggingface/lerobot  @ v0.7.0
 src/so101_playground/     our package
-scripts/                  our scripts (isaac_smoke.py)
+scripts/                  our scripts (isaac_smoke.py, teleop.sh, sim_alignment.py)
+configs/real_robot/       our follower's sim alignment (bench joint frame)
 envs/isaac/               Isaac env: setup_isaac.sh, env.sh, Vulkan ICD manifest
-envs/lerobot/             LeRobot env: setup_lerobot.sh, env.sh
+envs/lerobot/             LeRobot env: setup_lerobot.sh, env.sh, udev/ (stable /dev/so101_* names)
 RESEARCH.md EXPERIMENTS.md
 ```
 
@@ -45,6 +46,52 @@ once uv's cache is warm).
 source envs/lerobot/env.sh     # activates the venv; exports SO101_BENCH_ROOT, ISAACLAB_SH, SO101_BENCH_ISAAC_VENV
 python -c "import lerobot, torch; print(lerobot.__version__, torch.cuda.is_available())"
 ```
+
+### Home desktop devices
+
+The home desktop (RTX 3060 12GB, Ubuntu 24.04) runs the arms and cameras from the lerobot env; it
+needs no isaac env. `envs/lerobot/udev/99-so101.rules` gives the devices stable names:
+
+| Link | Device | Matched by |
+|---|---|---|
+| `/dev/so101_leader` | leader arm | USB serial `5CBC452337` |
+| `/dev/so101_follower` | follower arm | USB serial `5CBC453103` |
+| `/dev/so101_cam_wrist` | wrist camera | hub port `.4.2` |
+| `/dev/so101_cam_overhead` | overhead camera | hub port `.4.3` |
+
+```bash
+envs/lerobot/udev/install_udev.sh   # copies the rules to /etc/udev/rules.d (sudo), then: ls -l /dev/so101_*
+```
+
+- Both cameras are the same module (1e45:0209) with the same USB serial, so `/dev/v4l/by-id` shows
+  only one of them. The rules use the physical port of the 7-port VIA hub instead: keep each camera on
+  its marked hub port (swapping the cables swaps the names; the hub itself can go in any PC port).
+  Both run 640x480 MJPG at about 28 fps together; dim light lowers the rate (auto exposure).
+- On first plug-in the hub's downstream chip once failed to enumerate (`can't set config #1, error -71`
+  in `journalctl -k`) and every port behind it was invisible. Re-plugging the hub fixed it.
+
+`scripts/teleop.sh` runs leader -> follower teleoperation with both cameras (`use_degrees=false`, the
+bench datasets' units). The rerun viewer (rerun 0.33.1) freezes within about a minute and blocks the
+teleop loop (and the exit, before the follower's torque is released); it does the same with no robot
+attached. Use `--display_data=false` for anything longer than a quick look.
+
+### Follower sim alignment
+
+The bench maps policy joint values to motor ticks through a per-arm alignment (`zero_tick` per joint at
+the sim zero pose). Ours is `configs/real_robot/so101_follower_arm_sim_alignment.json`, measured
+2026-11-22 with a phone level. `scripts/sim_alignment.py` wraps the bench's `so101_sim_alignment.py`
+with our port/id/output defaults and a fix for LeRobot 0.7.0 (the bench closes the port with
+`bus.port_handler`, which 0.7.0 no longer has; the crash came before the save). The bench's
+`so101_real_policy_runner.py` and `so101_gripper_test.py` have the same `port_handler` call.
+
+```bash
+envs/lerobot/.venv/bin/python scripts/sim_alignment.py measure                 # torque off, guided
+envs/lerobot/.venv/bin/python scripts/sim_alignment.py measure --only gripper  # re-measure one joint
+envs/lerobot/.venv/bin/python scripts/sim_alignment.py live                    # read-only sim angles
+```
+
+The alignment stores the motors' homing offsets; **do not re-run LeRobot calibration on the follower**,
+or the bench runner refuses to start and the alignment has to be measured again.
 
 ### isaac env
 
