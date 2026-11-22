@@ -36,6 +36,16 @@ Extra behaviour:
     It never touches a session: replay frames do not enter the model's memory.
   * Per-request timing and peak GPU memory go to ``<log_dir>/server_requests.jsonl``; scores to
     ``<log_dir>/iw_scores.jsonl``. ``--save_latents_dir`` stores pred/observed latents (fp16) for videos.
+
+Real-robot mode (``--real``, T008; docs/real_internw0_server.md): the bench real runner
+(so101_real_policy_runner.py through scripts/policy_runner.py) sends no ``trace``, only ``episode``
+(``int(time.time())`` at each episode start). For such requests the server keeps one session and restarts it only
+when ``episode`` changes or on an explicit reset (``"reset": true`` in the /act body, or ``POST /reset``): the bench
+``internw0_server.py`` behaviour (memory = episode anchor frame + the frame 32 ticks back, replan 16). Requests that
+carry ``trace`` keep the sim behaviour above. Every real /act is logged under ``<log_dir>/real/``: one line in
+``real_queries.jsonl`` (request index, wall-clock receive/reply times, episode, query index in the episode, state,
+instruction, actions) and ``ep<episode>/q<idx>.npz`` (fp16 L0, d̂1, d̂2; actions, state) + the received PNGs, so
+the runner's recording can be aligned offline to compute e_pred. Nothing is scored at runtime.
 """
 
 from __future__ import annotations
@@ -224,12 +234,21 @@ class Policy:
         self.queries: OrderedDict[tuple, dict] = OrderedDict()  # (dir, episode, frame) -> prediction record
         self.observed: OrderedDict[tuple, torch.Tensor] = OrderedDict()  # observed latents for d_obs_nom
         self.checkpoint = args.checkpoint
+        self.real = bool(args.real)
+        self.real_session = None  # (episode, session): the one runner session, as in the bench server
+        self.real_reset = False
+        self.real_req = 0  # real /act requests served since start
+        self.real_ep_queries = 0  # queries in the current real session
         self.lock = threading.Lock()
         log_dir = Path(args.log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         self.req_log = (log_dir / "server_requests.jsonl").open("a")
         self.score_log = (log_dir / "iw_scores.jsonl").open("a")
         self.save_latents_dir = Path(args.save_latents_dir) if args.save_latents_dir else None
+        self.real_dir = log_dir / "real"
+        if self.real:
+            self.real_dir.mkdir(parents=True, exist_ok=True)
+            self.real_log = (self.real_dir / "real_queries.jsonl").open("a")
         log.info("InternW0 probe: camera=%s replan=%d denoise=%d future latents=%d delta tokens=%d",
                  camera_hw, self.replan_steps, self.session_cfg.num_inference_steps, self.n_future, n_delta)
 
@@ -261,15 +280,24 @@ class Policy:
         trace = payload.get("trace") or {}
         frame = trace.get("frame")
         key = (str(trace.get("dir", "")), episode)  # trace.dir = "<run dir>#<attempt>"
-        sess = self.sessions.get(key)
-        if sess is None or self.session_first.get(key) == frame:
-            sess = self.session_cls(self.runtime, self.session_cfg)  # new episode: fresh memory
-            self.sessions[key] = sess
-            self.session_first[key] = frame
-        self.sessions.move_to_end(key)
-        while len(self.sessions) > 8:
-            old, _ = self.sessions.popitem(last=False)
-            self.session_first.pop(old, None)
+        real = self.real and not payload.get("trace")
+        restarted = False
+        if real:  # bench internw0_server.py: one session, fresh when `episode` changes or on a reset
+            if self.real_session is None or self.real_session[0] != episode or self.real_reset or payload.get("reset"):
+                self.real_session = (episode, self.session_cls(self.runtime, self.session_cfg))
+                self.real_reset, self.real_ep_queries, restarted = False, 0, True
+                log.info("real: new session for episode %r", episode)
+            sess = self.real_session[1]
+        else:
+            sess = self.sessions.get(key)
+            if sess is None or self.session_first.get(key) == frame:
+                sess = self.session_cls(self.runtime, self.session_cfg)  # new episode: fresh memory
+                self.sessions[key] = sess
+                self.session_first[key] = frame
+            self.sessions.move_to_end(key)
+            while len(self.sessions) > 8:
+                old, _ = self.sessions.popitem(last=False)
+                self.session_first.pop(old, None)
         while sess.pending_model_actions:  # the client executed the whole previous chunk
             sess.update_obs(None)
         observation = {
@@ -283,6 +311,9 @@ class Policy:
         l0 = self._latents([canvas])[:, 0]
         delta = self._unpatch_delta(self._last_delta, tuple(l0.shape[-2:]))
         rec = {"canvas": canvas, "l0": l0, "pred": l0[:, None] + torch.cumsum(delta, dim=1)}  # [C, F, h, w]
+        if real:
+            self._log_real(payload, episode, restarted, sess, l0, delta, np.asarray(chunk, dtype=np.float32))
+            return np.asarray(chunk, dtype=np.float32)
         self.queries[(key[0], episode, frame)] = rec
         while len(self.queries) > 64:
             self.queries.popitem(last=False)
@@ -292,6 +323,30 @@ class Policy:
             np.savez_compressed(d / f"ep{episode:03d}_f{frame:05d}_pred.npz", l0=l0.half().cpu().numpy(),
                                 pred=rec["pred"].half().cpu().numpy())
         return np.asarray(chunk, dtype=np.float32)
+
+    def _log_real(self, payload: dict[str, Any], episode, restarted: bool, sess, l0: torch.Tensor,
+                  delta: torch.Tensor, actions: np.ndarray) -> None:
+        """One /act of the real runner: what came in and what the model predicted, for offline e_pred."""
+        q = self.real_ep_queries
+        d = self.real_dir / f"ep{episode}"
+        d.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(d / f"q{q:04d}.npz", l0=l0.half().cpu().numpy(), d1=delta[:, 0].half().cpu().numpy(),
+                            d2=delta[:, 1].half().cpu().numpy(), actions=actions,
+                            state=np.asarray(payload["state"], dtype=np.float32))
+        for name, png in zip(payload["camera_names"], payload["images_png_base64"], strict=True):
+            (d / f"q{q:04d}_{name}.png").write_bytes(base64.b64decode(png))  # the exact bytes the runner sent
+        self.real_log.write(json.dumps({
+            "req": self.real_req, "episode": episode, "q": q, "restarted": restarted,
+            # the session's tick counter at this query (16 per earlier query) and its kept memory frames
+            "session_step": int(sess.step_count), "memory_frames": len(getattr(sess, "visual_history", []) or []),
+            "t_recv": payload.get("_t_recv"), "t_reply": time.time(), "state": [float(x) for x in payload["state"]],
+            "instruction": str(payload["instruction"]), "num_steps": payload.get("num_steps"),
+            "camera_names": list(payload["camera_names"]), "npz": str(d / f"q{q:04d}.npz"),
+            "actions": actions.round(4).tolist(),
+        }) + "\n")
+        self.real_log.flush()
+        self.real_req += 1
+        self.real_ep_queries += 1
 
     # ------------------------------------------------------------------ /iw_score
     @torch.inference_mode()
@@ -345,7 +400,13 @@ def build_app(policy: Policy) -> FastAPI:
         return JSONResponse({"status": "ok", "repo_id": policy.checkpoint, "norm_tag": "internw0",
                              "num_images": 2, "camera_keys": ["overhead", "wrist"], "history_ticks": 1,
                              "chunk_size": policy.action_horizon, "n_action_steps": policy.replan_steps,
-                             "memory": policy.memory})
+                             "memory": policy.memory, "real": policy.real})
+
+    @app.post("/reset")
+    def reset() -> JSONResponse:
+        with policy.lock:
+            policy.real_reset = True  # the next real /act starts a fresh session
+        return JSONResponse({"status": "ok"})
 
     def _run(fn, payload, what):
         start = time.perf_counter()
@@ -361,6 +422,7 @@ def build_app(policy: Policy) -> FastAPI:
 
     @app.post("/act")
     def act(payload: dict) -> JSONResponse:
+        payload["_t_recv"] = time.time()  # wall clock at receipt (real-mode log)
         try:
             actions, dt = _run(policy.predict, payload, "act")
         except (KeyError, ValueError) as exc:
@@ -397,7 +459,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="Repo eval default (configs/sim_robodojo.yaml).")
     parser.add_argument("--log_dir", required=True)
     parser.add_argument("--save_latents_dir", default=None)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1", help="Real robot: reached over an SSH tunnel only.")
+    parser.add_argument("--real", action="store_true",
+                        help="Real-robot mode: requests without `trace` share one session, reset on `episode` change.")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
