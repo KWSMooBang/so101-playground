@@ -134,6 +134,11 @@ def phase_b():
     out = {"nominal": {}, "oracle": {}}
     ids_all = sorted(set().union(*[set(v) for v in list(nom.values()) + list(orc.values())])) if nom or orc else []
     subs = subsets(task, ids_all)
+    # Phase B ran on bin only (the only family >= 50% in Phase A): the group subsets must be the 3/3 split of
+    # the 6 bin layouts, never other families.
+    fams = {task[int(e)]["home_family"] for e in ids_all}
+    assert fams == {"bin"}, f"Phase B episodes span {fams}; group subsets would pool families"
+    assert len(subs["sim_seen"]) == len(subs["real_only"]) == 3, {k: len(v) for k, v in subs.items()}
     for t, eps in nom.items():
         base = nom.get("none") if t != "none" else None
         out["nominal"][t] = {name: stats_subset(eps, base, np.array([e for e in ids if e in eps]), rng, True)

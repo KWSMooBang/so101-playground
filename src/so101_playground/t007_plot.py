@@ -60,8 +60,8 @@ def panel_a(ax, a):
 
 def panel_b(ax, b):
     conds = ["none", "gain2", "latency6"]
-    subs = [("bin", BLUE, "home bin (all 6)"), ("sim_seen", AQUA, "sim-seen objects (3)"),
-            ("real_only", ORANGE, "real-only objects (3)")]
+    subs = [("bin", BLUE, "home bin (all 6)"), ("sim_seen", AQUA, "home bin, sim-seen objects (3)"),
+            ("real_only", ORANGE, "home bin, real-only objects (3)")]
     w = 0.2
     for j, c in enumerate(conds):
         lo, mid = T006_DIFF[c][1], T006_DIFF[c][0]
@@ -86,7 +86,8 @@ def panel_b(ax, b):
 
 def panel_c(ax, b):
     kinds = ["query", "window4", "episode"]
-    subs = [("bin", BLUE, "home bin (all 6)"), ("sim_seen", AQUA, "sim-seen (3)"), ("real_only", ORANGE, "real-only (3)")]
+    subs = [("bin", BLUE, "home bin (all 6)"), ("sim_seen", AQUA, "home bin, sim-seen (3)"),
+            ("real_only", ORANGE, "home bin, real-only (3)")]
     w = 0.2
     for j, k in enumerate(kinds):
         m, l, h = T006_AUROC[k]

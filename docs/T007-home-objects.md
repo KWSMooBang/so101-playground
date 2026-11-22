@@ -67,20 +67,36 @@ Axis conventions:
 
 ## 2. Real-world layout sheets
 
-`docs/home_objects/home_objects_layouts.pdf` (31 pages) and `docs/home_objects/index.html`. Page 1 lists the
-sizes above and defines the reference frame. Each of the following 30 pages (also
-`docs/home_objects/sheets/layout_NN.png`) shows:
-- the top view with the robot at the top;
-- a 5 cm grid in cm from the pan axis;
+`docs/home_objects/home_objects_layouts.pdf` (32 pages) and `docs/home_objects/index.html`.
+
+**Page 1: how to read the sheets** (`docs/home_objects/how_to_read.png`). The reader stands at the front of the
+table, facing the robot. The page shows:
+- the origin: the shoulder-pan axis;
+- **toward you** (+ cm): along the robot's centre line, the direction the arm reaches with shoulder_pan = 0;
+- **right** (+ cm to your right, − to your left);
+- arrow directions as a **clock** seen from above: 12 = toward the robot, 3 = your right, 6 = toward you,
+  9 = your left;
+- a worked example.
+
+**Page 2:** asset sizes and the reference frame.
+
+**30 layout pages** (also `docs/home_objects/sheets/layout_NN.png`). Each shows:
+- the top view in that same orientation: robot at the top, you at the bottom, your right on the right of the
+  page;
+- a 5 cm grid;
 - the object area (TABLE_BOUNDS, 39 × 25.5 cm), the robot keep-out polygon, the robot root and the pan axis;
 - the bin;
-- each object's true footprint outline with its name, role (target/ref) and an arrow along its +x;
+- each object's footprint outline with name, role and an arrow along its +x;
 - for move layouts, the move direction;
-- a table of fwd / side / heading per item;
-- the sim overhead camera frame at the robot start (`docs/home_objects/sim_frames/`), which shows the human
-  which end of each object is which and what their overhead camera should see.
+- a table of *toward you* cm, *right* cm (+R / −L), and the arrow as degrees clockwise from 12 and as a clock
+  hour;
+- the sim overhead frame at the robot start, with the sheet's outlines and arrows **projected onto it**
+  (bench overhead camera model). The overlay shows which physical end each arrow points to and checks the
+  drawing against the render.
 
-All poses are also in `docs/home_objects/home_objects_poses.csv`.
+All poses (world, robot root, pan-axis cm, heading) are also in `docs/home_objects/home_objects_poses.csv`.
+`heading_from_fwd_deg` in the layout JSON and CSV is the raw value: degrees counter-clockwise seen from above
+from *toward you*, so +90 = your right. The sheets show it converted to the clock.
 
 ## 3. Phase A: baseline success (`none`, 30 layouts × 1 run)
 
@@ -215,6 +231,25 @@ Limits:
 - one run each;
 - α0 success varies by run;
 - `none` with replay vs `none` without (Phase A) differ in e_pred@1 by 0.002 (0.1359 vs 0.1338).
+
+## Review corrections (2026-11-22, no new runs)
+
+1. **Heading legend on the sheets (P1).** The old legend said "+90 = pointing to your left". That was wrong:
+   +90° counter-clockwise from *fwd* (toward you), seen from above, points to **your right**. The drawn
+   arrows, positions and stored values were already correct; only the text was wrong.
+   - Checked against the sim: every sheet now projects its outlines and arrows onto the sim overhead frame,
+     and they land on the rendered objects (checked by eye on layouts 01, 11, 22).
+   - Checked numerically over all 30 layouts (102 objects): sheet arrow angle vs table clock agree within
+     0.05°, sheet position vs table within 0.05 cm (rounding), and image-right equals viewer-right everywhere.
+   - All labels are now in one viewer-centred frame (toward you / your right / clock), and page 1 explains it.
+2. **Bin outline ignored `footprint_center_offset` (P2).** Fixed (`bin_corners`). The offset is (0, 0) in all
+   30 layouts, so no drawing changes.
+3. **Group series in the Phase B panels (P2).** Verified: the sim-seen / real-only subsets are exactly bin
+   layouts 0–2 / 3–5 in every Phase B setting, and the results.tsv group rows have n = 3. The Phase A group
+   rows (n = 15) span all families by design.
+   - `t007_analysis.py` now asserts the Phase B episodes are bin only and the split is 3/3.
+   - The figure legends now read "home bin, sim-seen / real-only".
+   - Re-running the analysis gives a byte-identical `summary_B.json`. **No number changed.**
 
 ## 6. Code and changes
 
