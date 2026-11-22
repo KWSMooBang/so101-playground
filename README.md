@@ -10,7 +10,7 @@ third_party/so101_bench   submodule, github.com/5hadytru/so101_bench @ 470e09e (
 third_party/lerobot       submodule, github.com/huggingface/lerobot  @ v0.7.0
 src/so101_playground/     our package (bench_units.py: our joint units <-> the bench's)
 scripts/                  our scripts (isaac_smoke.py, teleop.sh, record.sh, convert_to_bench_units.py,
-                          sim_alignment.py, overhead_align.py)
+                          sim_alignment.py, overhead_align.py, policy_runner.py)
 configs/real_robot/       our follower's sim alignment (bench joint frame)
 envs/isaac/               Isaac env: setup_isaac.sh, env.sh, Vulkan ICD manifest
 envs/lerobot/             LeRobot env: setup_lerobot.sh, env.sh, udev/ (stable /dev/so101_* names)
@@ -83,13 +83,20 @@ the sim zero pose). Ours is `configs/real_robot/so101_follower_arm_sim_alignment
 2026-11-22 with a phone level. `scripts/sim_alignment.py` wraps the bench's `so101_sim_alignment.py`
 with our port/id/output defaults and a fix for LeRobot 0.7.0 (the bench closes the port with
 `bus.port_handler`, which 0.7.0 no longer has; the crash came before the save). The bench's
-`so101_real_policy_runner.py` and `so101_gripper_test.py` have the same `port_handler` call.
+`so101_real_policy_runner.py` has the same call (fixed in `scripts/policy_runner.py`, below), and so does
+`so101_gripper_test.py`.
 
 ```bash
 envs/lerobot/.venv/bin/python scripts/sim_alignment.py measure                 # torque off, guided
 envs/lerobot/.venv/bin/python scripts/sim_alignment.py measure --only gripper  # re-measure one joint
 envs/lerobot/.venv/bin/python scripts/sim_alignment.py live                    # read-only sim angles
+envs/lerobot/.venv/bin/python scripts/sim_alignment.py verify                  # TORQUE ON: 5 poses at 20 deg/s
 ```
+
+`verify` (2026-11-22) held its 5 poses within 1.2 deg on every joint except elbow_flex. The elbow's
+measured minus commanded angle was +2.6 to +3.5 deg in 4 poses and +0.7 deg in the fifth. That varies with the pose, so it looks
+like servo droop under load rather than a zero offset. Logs and wrist frames go to
+`outputs/real_sim_alignment/`.
 
 The alignment stores the motors' homing offsets; **do not re-run LeRobot calibration on the follower**,
 or the bench runner refuses to start and the alignment has to be measured again.
@@ -157,6 +164,59 @@ As a cross-check, the two arms' calibration range ends land within about 2 deg o
 degrees, except shoulder_lift's back stop (4.7 deg) and the closed gripper. Those ranges came from each
 arm's own LeRobot calibration, independent of the phone-level alignment.
 
+### Real-arm inference
+
+`scripts/policy_runner.py` runs the bench's real-robot runner (`so101_real_policy_runner.py`: tkinter
+window with both cameras and the overhead layout overlay, sim-alignment joint mapping, docking, episode
+recording) on our arm. The policy server runs on the GPU server; the runner reaches it on localhost
+through an SSH tunnel. Besides our ports, cameras and output paths, the wrapper:
+
+- fixes the `bus.port_handler` calls for LeRobot 0.7.0;
+- applies the gripper floor (sim's jaw limit, tick 2061) only as the runner's software clamp. The runner
+  would write it to the gripper's EEPROM, which differs from our calibration file's 2012. LeRobot would then
+  ask at the next teleop/record whether to keep the calibration file, and typing `c` there recalibrates
+  and breaks the alignment;
+- never starts local servers, and errors with the port to forward when none answers;
+- opens the overhead camera as MJPG, and keeps OpenCV's default 4 capture buffers. The runner sets 1,
+  which halves our two cameras to about 16 fps when both stream;
+- adds `internw0` (port 8004) and `lawam` (8005) with the client settings of `scripts/wam_gap_eval.py`
+  (exp/wam-* branches). The settings are LeRobot joint frame, overhead + wrist without init frames, and
+  16 / 36 actions per query.
+
+```bash
+# GPU server (lead_so101-playground, exp/home-objects checkout; envs/internw0, envs/lawam set up there)
+CUDA_VISIBLE_DEVICES=0 WAM_CHECKPOINT_ROOT=envs/internw0/weights/checkpoints \
+    DIFFSYNTH_SKIP_DOWNLOAD=true HF_HUB_OFFLINE=1 envs/internw0/InternW0-Delta/.venv/bin/python \
+    third_party/so101_bench/scripts/internw0_server.py --repo envs/internw0/InternW0-Delta \
+    --checkpoint envs/internw0/weights/so101_bench_InternW0-Delta/model.pt \
+    --train_config envs/internw0/weights/so101_bench_InternW0-Delta/config.yaml \
+    --stats envs/internw0/weights/so101_bench_InternW0-Delta/dataset_stats.json --host 127.0.0.1 --port 8004
+GPU=0 scripts/run_lawam_server.sh 8005 outputs/real_robot/lawam_server     # LaWAM (probe server, 127.0.0.1)
+
+# home desktop
+ssh -N -L 8004:localhost:8004 -L 8005:localhost:8005 <gpu-server>
+envs/lerobot/.venv/bin/python scripts/policy_runner.py --policy internw0 --instruction "Place the pen in the plastic bin."
+envs/lerobot/.venv/bin/python scripts/policy_runner.py --no_policy        # cameras, overlay, docking only
+```
+
+Serve InternW0 with the bench's `internw0_server.py`, not our `internw0_probe_server.py`. Both keep
+per-episode memory. The bench server resets it when the request's `episode` changes, and the runner
+changes it at every episode start. The probe server keys sessions by `trace.frame`, which the runner does
+not send, so it restarts the memory on every query. LaWAM is stateless; without a trace its probe server
+behaves like the bench's `lawam_server.py`.
+
+In the window: d docks, i captures the init frames (unused by these two models), space starts or pauses
+the policy, q docks, turns the torque off and quits. Episodes go to `outputs/real_robot/runs/`.
+
+Checked 2026-11-22:
+- **Dry run with `--no_policy`.** Torque on at the current pose, dock, q: docked and the torque went off.
+  The EEPROM was untouched.
+- **Cameras.** Both at 30 fps through the runner's reader.
+- **Client against a fake `/act` server.** internw0 queries every 16 ticks and lawam every 36. The
+  payload holds the two images, `episode` and state in bench `.pos`. A held state round-trips to 0.000
+  deg.
+- **Not yet run:** a real model server.
+
 ### isaac env
 
 `setup_isaac.sh` installs `isaacsim[all,extscache]==5.1.0` (pip, pypi.nvidia.com; brings torch 2.7.0
@@ -213,14 +273,15 @@ home desktop.
 home desktop                                         GPU server
 ────────────────────────────                         ───────────────────────────
 SO-101 follower (USB serial)                         policy server
-overhead + wrist cameras                               bench:   scripts/*_server.py   HTTP POST /act  :8000
+overhead + wrist cameras                               bench:   *_server.py  HTTP POST /act  :8004 :8005 ...
 robot client                                           lerobot: lerobot-policy-server Zenoh tcp       :7447
-  bench real runner  ──┐
-  lerobot-rollout    ──┴── ssh -L 8000:localhost:8000 -L 7447:localhost:7447 user@gpu-server ──▶
+  scripts/policy_runner.py ──┐
+  lerobot-rollout          ──┴── ssh -N -L 8004:localhost:8004 -L 7447:localhost:7447 <gpu-server> ──▶
 ```
 
-- Bench path: start a `scripts/*_server.py` on the GPU server (`--port 8000`); the home-side runner
-  uses `--policy_port 8000` against the tunnelled localhost port.
+- Bench path: a bench-protocol server on the GPU server, one port per policy (internw0 8004, lawam 8005,
+  the bench's own models 5555/8001-8003); `scripts/policy_runner.py --policy NAME` talks to the
+  tunnelled localhost port (see Real-arm inference).
 - LeRobot path: `lerobot-policy-server` on the GPU server; on the home desktop
   `lerobot-rollout --inference.type=remote --inference.endpoint=tcp/127.0.0.1:7447`. In LeRobot 0.7.0
   asynchronous/remote inference uses Zenoh (the `remote` extra), not the gRPC server of older releases.

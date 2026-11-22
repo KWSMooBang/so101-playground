@@ -12,9 +12,11 @@ changes, without editing the submodule:
   (they use rustypot). It raised AttributeError in `measure`'s `finally`, before the result was saved, so a
   full measurement was lost. Here it closes the port with `bus.disconnect(disable_torque=False)`: same effect,
   the torque is left as it was.
-- Our defaults: the follower's by-id port, robot id `so101_follower_arm` (its LeRobot calibration id) and the
+- Our defaults: the follower's by-id port, robot id `so101_follower_arm` (its LeRobot calibration id), the
   output `configs/real_robot/so101_follower_arm_sim_alignment.json` (tracked; the bench default is inside
-  the submodule). Any of --port/--robot_id/--output given on the command line wins.
+  the submodule) and, for `verify`'s snapshots, the wrist camera's /dev/videoN. Any of
+  --port/--robot_id/--output/--camera given on the command line wins. `verify` logs to
+  outputs/real_sim_alignment/ here, not inside the submodule.
 """
 
 from __future__ import annotations
@@ -47,12 +49,16 @@ def _close(self) -> None:
 def main() -> None:
     if Path("/dev/so101_follower").exists():
         DEFAULTS["--port"] = "/dev/so101_follower"
+    wrist = Path("/dev/so101_cam_wrist").resolve()
+    if wrist.name.startswith("video"):
+        DEFAULTS["--camera"] = wrist.name.removeprefix("video")  # verify takes an index, not a path
     given = {arg.split("=", 1)[0] for arg in sys.argv[1:]}
     for flag, value in DEFAULTS.items():
         if flag not in given:
             sys.argv += [flag, value]
     bench = _load_bench_script()
     bench.ReadOnlyArm.close = _close
+    bench.REPO_ROOT = ROOT  # only verify's output directory reads it after import
     bench.main()
 
 
