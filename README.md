@@ -8,8 +8,9 @@ real SO-101 (overhead + wrist cameras) remotely. See `RESEARCH.md` for goals and
 ```
 third_party/so101_bench   submodule, github.com/5hadytru/so101_bench @ 470e09e (main, 2026-11-04)
 third_party/lerobot       submodule, github.com/huggingface/lerobot  @ v0.7.0
-src/so101_playground/     our package
-scripts/                  our scripts (isaac_smoke.py, teleop.sh, record.sh, sim_alignment.py, overhead_align.py)
+src/so101_playground/     our package (bench_units.py: our joint units <-> the bench's)
+scripts/                  our scripts (isaac_smoke.py, teleop.sh, record.sh, convert_to_bench_units.py,
+                          sim_alignment.py, overhead_align.py)
 configs/real_robot/       our follower's sim alignment (bench joint frame)
 envs/isaac/               Isaac env: setup_isaac.sh, env.sh, Vulkan ICD manifest
 envs/lerobot/             LeRobot env: setup_lerobot.sh, env.sh, udev/ (stable /dev/so101_* names)
@@ -130,7 +131,31 @@ lerobot parses CLI values as YAML (`a: b` becomes a dict), so the script passes 
 Pilot 2026-11-22: 3 episodes of 20-24 s, 29.9 Hz with no tick over budget, streaming AV1 encoding, 33 MB.
 The `.pos` values are in our follower's calibration, not the bench arm's (`REAL_SO101_CALIBRATION`).
 Through our sim alignment they differ by about 1-3 units per joint (wrist_roll scale about 5%), so convert
-them before mixing with bench data.
+them before mixing with bench data (next section).
+
+### Bench joint units
+
+The bench's `.pos` is a fixed bijection of sim joint angles (`so101_bench.utils.lerobot_calibration`);
+LeRobot's `.pos` depends on each arm's calibration. `src/so101_playground/bench_units.py` maps between
+them through our sim alignment: our `.pos` -> ticks (our LeRobot calibration file, checked against the
+alignment's snapshot) -> sim degrees -> bench `.pos`, and back (`BenchUnits.to_bench` / `from_bench`).
+
+```bash
+envs/lerobot/.venv/bin/python scripts/convert_to_bench_units.py outputs/datasets/pilot   # -> pilot_bench
+```
+
+The script copies the dataset, converts `observation.state` and `action` (the leader's `.pos`, which the
+follower turns into goal ticks with its own calibration), recomputes their stats, sets `robot_type` to
+`so101_follower` and writes `meta/bench_units.json`. Videos are copied unchanged.
+
+Bench `.pos` cannot go past the bench arm's calibration range. In the pilot, 31% of frames saturate on
+shoulder_lift and 38% on gripper. All of them are at mechanical ends: the folded rest pose has our lift at
+-107 deg, past the bench's -103.2 back stop, and the closed gripper is at -14 deg, past the jaw limit of
+-12.75. The bench data reads about the same there: the median episode minimum is -99.4 for lift and 1.1
+for gripper.
+As a cross-check, the two arms' calibration range ends land within about 2 deg of each other in sim
+degrees, except shoulder_lift's back stop (4.7 deg) and the closed gripper. Those ranges came from each
+arm's own LeRobot calibration, independent of the phone-level alignment.
 
 ### isaac env
 
