@@ -69,6 +69,8 @@ parser.add_argument("--max_ticks", type=int, default=None, help="Optional cap on
 parser.add_argument("--initial_hold_time_s", type=float, default=1.5)
 parser.add_argument("--oracle_alpha", type=float, default=0.0,
                     help="T005: oracle correction strength (so101_playground.oracle), between the clamp and the gap.")
+parser.add_argument("--initial_frames_dir", type=Path, default=None,
+                    help="T007: save the overhead/wrist frames at the robot start of each episode (layout sheets).")
 parser.add_argument("--token_stats", action="store_true",
                     help="T005: ask /lam_score to log per-token e_pred / e_static (256 values each).")
 AppLauncher.add_app_launcher_args(parser)
@@ -389,6 +391,12 @@ def main() -> None:
                     mark_benchmark_robot_start(u, object_asset_names=asset_names, bin_name="plastic_bin",
                                                force_robot_start_time=True)
                     policy.set_episode_initial_observation(obs["visual"])
+                    if args.initial_frames_dir is not None:
+                        args.initial_frames_dir.mkdir(parents=True, exist_ok=True)
+                        tid = (episode.metadata or {}).get("trial_id", ep_id)
+                        for cam in ("overhead", "wrist"):
+                            Image.fromarray(_rgb(obs["visual"], cam).cpu().numpy().astype(np.uint8)).save(
+                                args.initial_frames_dir / f"trial{int(tid):02d}_{cam}.png")
                     gap.reset(hold)
                     started = True
                 policy.trace_episode, policy.trace_frame = ep_id, step

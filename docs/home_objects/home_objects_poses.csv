@@ -1,0 +1,133 @@
+trial_id,family,instruction,item,role,pan_fwd_cm,pan_side_cm,heading_from_fwd_deg,base_x_m,base_y_m,base_yaw_deg,world_x_m,world_y_m,world_yaw_deg
+0,bin,"Place each object in the plastic bin",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+0,bin,"Place each object in the plastic bin",black pen,target,6.4,-14.2,157.9,-0.12157,-0.08684,67.91,-0.05939,0.08116,74.11
+1,bin,"Place each object in the plastic bin",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+1,bin,"Place each object in the plastic bin",black remote,target,25.5,10.4,47.7,0.125,-0.27786,-42.25,0.20635,-0.08214,-36.06
+2,bin,"Place each object in the plastic bin",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+2,bin,"Place each object in the plastic bin",blue paintbrush,target,24.2,-8.4,169.2,-0.06279,-0.26491,79.2,0.01826,-0.08953,85.4
+3,bin,"Place each object in the plastic bin",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+3,bin,"Place each object in the plastic bin",red pen,target,13.0,11.1,104.3,0.13219,-0.15278,14.34,0.19999,0.04299,20.53
+4,bin,"Place each object in the plastic bin",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+4,bin,"Place each object in the plastic bin",purple toothbrush,target,23.6,0.5,7.9,0.0256,-0.25928,-82.06,0.10552,-0.0744,-75.87
+5,bin,"Place each object in the plastic bin",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+5,bin,"Place each object in the plastic bin",razor,target,17.6,15.5,92.1,0.17543,-0.19922,2.09,0.248,0.00148,8.28
+6,move,"Move the black pen forwards",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+6,move,"Move the black pen forwards",razor,,23.7,9.1,153.7,0.11197,-0.2602,63.71,0.19148,-0.06598,69.9
+6,move,"Move the black pen forwards",black pen,target,5.1,9.7,-68.7,0.11815,-0.07386,-158.68,0.17752,0.11993,-152.49
+6,move,"Move the black pen forwards",black remote,,19.6,-6.7,99.3,-0.04608,-0.21916,9.34,0.02992,-0.04224,15.53
+6,move,"Move the black pen forwards",red pen,,-0.6,-17.8,130.6,-0.15681,-0.01668,40.58,-0.10201,0.14711,46.78
+7,move,"Move the pen left",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+7,move,"Move the pen left",blue paintbrush,,4.4,9.8,23.3,0.11857,-0.06697,-66.7,0.17719,0.12683,-60.5
+7,move,"Move the pen left",black remote,,21.7,13.7,150.7,0.15755,-0.24021,60.7,0.23464,-0.0412,66.89
+7,move,"Move the pen left",purple toothbrush,,20.9,-6.9,-144.6,-0.04821,-0.23162,125.4,0.02916,-0.05486,131.6
+7,move,"Move the pen left",red pen,target,5.2,-15.8,102.2,-0.13725,-0.075,12.18,-0.07626,0.09124,18.38
+8,move,"Move the remote right",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+8,move,"Move the remote right",purple toothbrush,,-0.7,-17.8,75.3,-0.1575,-0.01594,-14.69,-0.10277,0.14777,-8.49
+8,move,"Move the remote right",black pen,,27.5,14.0,-81.7,0.16033,-0.29772,-171.66,0.24362,-0.09807,-165.47
+8,move,"Move the remote right",black remote,target,17.6,4.6,-168.9,0.06668,-0.19928,101.08,0.13989,-0.01031,107.28
+8,move,"Move the remote right",razor,,3.7,15.2,-123.6,0.1731,-0.06043,146.41,0.2307,0.13921,152.61
+9,move,"Move the remote left",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+9,move,"Move the remote left",razor,,2.3,-13.3,-115.6,-0.11185,-0.04655,154.41,-0.05409,0.12226,160.61
+9,move,"Move the remote left",red pen,,26.8,10.8,-77.1,0.12912,-0.29104,-167.1,0.21186,-0.0948,-160.91
+9,move,"Move the remote left",blue paintbrush,,5.0,16.9,-16.2,0.18976,-0.0735,-106.2,0.24867,0.12801,-100.01
+9,move,"Move the remote left",black remote,target,16.3,-2.3,-5.4,-0.00252,-0.18622,-95.38,0.06968,-0.00479,-89.18
+10,move,"Move the red pen right",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+10,move,"Move the red pen right",black pen,,4.7,16.8,33.3,0.18836,-0.07051,-56.73,0.24696,0.13084,-50.54
+10,move,"Move the red pen right",red pen,target,10.7,6.2,-8.7,0.08245,-0.1299,-98.65,0.14807,0.06037,-92.46
+10,move,"Move the red pen right",blue paintbrush,,26.3,10.7,-24.2,0.12739,-0.28595,-114.15,0.20959,-0.08993,-107.96
+10,move,"Move the red pen right",purple toothbrush,,14.0,-10.0,-173.1,-0.07894,-0.16325,96.9,-0.00877,0.00979,103.09
+11,move,"Move the toothbrush backwards",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+11,move,"Move the toothbrush backwards",blue paintbrush,,23.6,-6.9,178.5,-0.0483,-0.25908,88.49,0.03203,-0.08216,94.68
+11,move,"Move the toothbrush backwards",razor,,0.3,-15.4,139.7,-0.13323,-0.02652,49.65,-0.0775,0.13987,55.85
+11,move,"Move the toothbrush backwards",black pen,,5.2,9.8,122.0,0.11899,-0.07474,32.01,0.17845,0.11915,38.21
+11,move,"Move the toothbrush backwards",purple toothbrush,target,21.1,7.3,131.7,0.09375,-0.23415,41.69,0.17056,-0.04205,47.88
+12,move,"Move the paintbrush forwards",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+12,move,"Move the paintbrush forwards",purple toothbrush,,25.9,-0.2,-104.7,0.0185,-0.28251,165.32,0.10097,-0.09825,171.51
+12,move,"Move the paintbrush forwards",black remote,,8.7,15.7,4.4,0.17829,-0.10985,-85.57,0.2412,0.09064,-79.38
+12,move,"Move the paintbrush forwards",black pen,,0.0,-17.5,-24.7,-0.15452,-0.02318,-114.7,-0.09903,0.14089,-108.5
+12,move,"Move the paintbrush forwards",blue paintbrush,target,9.1,-10.8,-42.3,-0.08682,-0.11386,-132.3,-0.02193,0.05805,-126.11
+13,move,"Move the razor backwards",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+13,move,"Move the razor backwards",razor,target,16.7,8.0,30.0,0.10059,-0.1898,-60.0,0.17258,0.00277,-53.81
+13,move,"Move the razor backwards",blue paintbrush,,2.3,-16.5,150.0,-0.144,-0.04587,60.03,-0.08611,0.11947,66.22
+13,move,"Move the razor backwards",purple toothbrush,,16.5,-8.7,-167.8,-0.06627,-0.18794,102.21,0.00648,-0.01339,108.41
+13,move,"Move the razor backwards",red pen,,3.2,15.9,54.9,0.17969,-0.0553,-35.15,0.2367,0.14502,-28.95
+14,next_to,"Place the red pen next to the remote",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+14,next_to,"Place the red pen next to the remote",red pen,target,26.5,5.9,-70.8,0.07986,-0.2877,-160.8,0.16253,-0.09679,-154.6
+14,next_to,"Place the red pen next to the remote",razor,,11.2,-10.4,-42.3,-0.0834,-0.13487,-132.26,-0.01627,0.03753,-126.07
+14,next_to,"Place the red pen next to the remote",black remote,ref,13.1,14.8,8.6,0.16918,-0.15429,-81.36,0.23693,0.04548,-75.17
+14,next_to,"Place the red pen next to the remote",black pen,,22.5,-5.9,146.0,-0.03829,-0.24765,56.03,0.04075,-0.06973,62.22
+15,next_to,"Place the remote next to the paintbrush",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+15,next_to,"Place the remote next to the paintbrush",razor,,21.9,-8.2,-129.5,-0.06098,-0.24198,140.45,0.01758,-0.06654,146.65
+15,next_to,"Place the remote next to the paintbrush",black remote,target,18.8,11.1,144.2,0.13214,-0.21132,54.24,0.20626,-0.01522,60.44
+15,next_to,"Place the remote next to the paintbrush",blue paintbrush,ref,4.1,-14.7,-31.7,-0.12589,-0.06383,-121.73,-0.06617,0.10357,-115.54
+15,next_to,"Place the remote next to the paintbrush",black pen,,2.4,11.7,-72.9,0.13791,-0.04735,-162.85,0.1943,0.14842,-156.66
+16,next_to,"Place the toothbrush next to the red pen",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+16,next_to,"Place the toothbrush next to the red pen",red pen,ref,-0.2,-18.0,-149.0,-0.15902,-0.02101,120.98,-0.10374,0.14257,127.17
+16,next_to,"Place the toothbrush next to the red pen",razor,,18.4,-3.7,-146.6,-0.01574,-0.20755,123.42,0.05884,-0.02743,129.61
+16,next_to,"Place the toothbrush next to the red pen",black pen,,4.5,16.4,19.2,0.18461,-0.0679,-70.78,0.24295,0.13303,-64.59
+16,next_to,"Place the toothbrush next to the red pen",purple toothbrush,target,13.2,6.7,-150.2,0.08756,-0.15501,119.8,0.15586,0.03595,126.0
+17,next_to,"Place the razor next to the toothbrush",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+17,next_to,"Place the razor next to the toothbrush",purple toothbrush,ref,6.4,15.3,80.3,0.17383,-0.08708,-9.71,0.2343,0.1128,-3.52
+17,next_to,"Place the razor next to the toothbrush",razor,target,20.8,-8.9,30.8,-0.06781,-0.23156,-59.17,0.00966,-0.05691,-52.98
+17,next_to,"Place the razor next to the toothbrush",blue paintbrush,,-0.2,-16.4,-59.7,-0.14301,-0.02141,-149.7,-0.08778,0.14389,-143.51
+17,next_to,"Place the razor next to the toothbrush",red pen,,19.6,8.5,59.3,0.10531,-0.21956,-30.72,0.18048,-0.0263,-24.53
+18,next_to,"Place the razor next to the black pen",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+18,next_to,"Place the razor next to the black pen",razor,target,19.8,-7.3,-123.7,-0.05176,-0.22138,146.29,0.02452,-0.04506,152.48
+18,next_to,"Place the razor next to the black pen",black remote,,7.1,13.3,48.7,0.15362,-0.09438,-41.27,0.215,0.10336,-35.07
+18,next_to,"Place the razor next to the black pen",red pen,,26.6,12.3,-72.9,0.1443,-0.28866,-162.91,0.2267,-0.09079,-156.71
+18,next_to,"Place the razor next to the black pen",black pen,ref,5.4,-15.7,118.7,-0.13584,-0.07714,28.71,-0.07463,0.08926,34.9
+19,next_to,"Place the paintbrush next to the razor",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+19,next_to,"Place the paintbrush next to the razor",blue paintbrush,target,20.4,-7.1,31.3,-0.05056,-0.22726,-58.67,0.02634,-0.05078,-52.47
+19,next_to,"Place the paintbrush next to the razor",black remote,,16.3,9.9,-52.7,0.12002,-0.18594,-142.69,0.19148,0.00871,-136.5
+19,next_to,"Place the paintbrush next to the razor",razor,ref,3.6,14.7,36.4,0.1681,-0.05904,-53.63,0.22558,0.14006,-47.43
+19,next_to,"Place the paintbrush next to the razor",purple toothbrush,,2.9,-12.3,-115.7,-0.10201,-0.05252,154.27,-0.04365,0.11738,160.47
+20,next_to,"Place the black pen next to the toothbrush",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+20,next_to,"Place the black pen next to the toothbrush",purple toothbrush,ref,-0.8,-18.4,-52.8,-0.16308,-0.01522,-142.85,-0.10839,0.14788,-136.65
+20,next_to,"Place the black pen next to the toothbrush",red pen,,9.2,-11.3,144.3,-0.09194,-0.1155,54.28,-0.02685,0.05587,60.47
+20,next_to,"Place the black pen next to the toothbrush",black remote,,17.3,1.3,19.9,0.03409,-0.19644,-70.11,0.10718,-0.01101,-63.91
+20,next_to,"Place the black pen next to the toothbrush",black pen,target,4.3,11.9,-123.3,0.13975,-0.06596,146.67,0.19815,0.13012,152.87
+21,next_to,"Place the paintbrush next to the pen",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+21,next_to,"Place the paintbrush next to the pen",black remote,,20.7,-3.2,-139.4,-0.01153,-0.23032,130.58,0.06548,-0.04961,136.78
+21,next_to,"Place the paintbrush next to the pen",purple toothbrush,,3.2,-13.4,50.2,-0.1134,-0.05527,-39.83,-0.05469,0.11342,-33.64
+21,next_to,"Place the paintbrush next to the pen",black pen,ref,23.4,10.2,143.7,0.12234,-0.25719,53.7,0.20147,-0.06188,59.9
+21,next_to,"Place the paintbrush next to the pen",blue paintbrush,target,7.1,16.4,-57.6,0.18437,-0.09427,-147.6,0.24556,0.10678,-141.41
+22,between,"Place the toothbrush between the paintbrush and the pen",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+22,between,"Place the toothbrush between the paintbrush and the pen",black remote,,25.0,6.3,129.7,0.08334,-0.27316,39.66,0.16442,-0.08196,45.85
+22,between,"Place the toothbrush between the paintbrush and the pen",red pen,ref,7.9,-11.7,141.6,-0.09624,-0.10167,51.55,-0.03262,0.06915,57.75
+22,between,"Place the toothbrush between the paintbrush and the pen",blue paintbrush,ref,-0.6,-16.8,144.7,-0.14726,-0.0167,54.7,-0.09251,0.14811,60.89
+22,between,"Place the toothbrush between the paintbrush and the pen",purple toothbrush,target,4.2,16.7,-24.0,0.18741,-0.06504,-114.0,0.24542,0.13618,-107.8
+23,between,"Place the remote between the black pen and the razor",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+23,between,"Place the remote between the black pen and the razor",razor,ref,9.6,9.4,145.2,0.11431,-0.11885,55.25,0.17856,0.07479,61.44
+23,between,"Place the remote between the black pen and the razor",black pen,ref,22.3,14.8,-177.5,0.16927,-0.24625,92.55,0.24695,-0.04594,98.74
+23,between,"Place the remote between the black pen and the razor",black remote,target,23.8,-3.7,142.1,-0.01604,-0.26062,52.09,0.06426,-0.08022,58.29
+23,between,"Place the remote between the black pen and the razor",red pen,,4.0,-12.2,43.8,-0.10136,-0.06285,-46.24,-0.0419,0.10719,-40.05
+24,between,"Place the pen between the toothbrush and the remote",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+24,between,"Place the pen between the toothbrush and the remote",black remote,ref,18.3,14.3,-124.3,0.16358,-0.20643,145.7,0.23699,-0.00697,151.9
+24,between,"Place the pen between the toothbrush and the remote",black pen,target,0.4,-14.5,-87.3,-0.12415,-0.02733,-177.35,-0.06839,0.14004,-171.15
+24,between,"Place the pen between the toothbrush and the remote",blue paintbrush,,9.3,7.6,153.2,0.09639,-0.11561,63.22,0.16039,0.07608,69.41
+24,between,"Place the pen between the toothbrush and the remote",purple toothbrush,ref,13.4,-10.9,32.3,-0.08778,-0.15745,-57.71,-0.01819,0.01461,-51.52
+25,between,"Place the red pen between the razor and the paintbrush",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+25,between,"Place the red pen between the razor and the paintbrush",black pen,,25.1,-6.7,-127.0,-0.04588,-0.27416,142.97,0.03607,-0.09689,149.17
+25,between,"Place the red pen between the razor and the paintbrush",blue paintbrush,ref,3.4,-13.4,-28.7,-0.11313,-0.05712,-118.73,-0.05422,0.11162,-112.53
+25,between,"Place the red pen between the razor and the paintbrush",razor,ref,22.8,5.1,58.0,0.07185,-0.25132,-32.04,0.15064,-0.06149,-25.84
+25,between,"Place the red pen between the razor and the paintbrush",red pen,target,7.5,12.1,-128.4,0.14229,-0.09776,141.56,0.20409,0.09877,147.76
+26,between,"Place the black pen between the red pen and the toothbrush",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+26,between,"Place the black pen between the red pen and the toothbrush",red pen,ref,24.3,5.1,13.6,0.07144,-0.26577,-76.38,0.1518,-0.0759,-70.18
+26,between,"Place the black pen between the red pen and the toothbrush",purple toothbrush,ref,10.3,12.9,-134.1,0.15008,-0.12615,135.95,0.2149,0.07139,142.14
+26,between,"Place the black pen between the red pen and the toothbrush",black pen,target,24.7,-7.6,-143.2,-0.05477,-0.26982,126.82,0.02676,-0.09354,133.02
+26,between,"Place the black pen between the red pen and the toothbrush",razor,,2.3,-12.7,-159.5,-0.10656,-0.04629,110.48,-0.04885,0.12309,116.68
+27,between,"Place the toothbrush between the remote and the pen",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+27,between,"Place the toothbrush between the remote and the pen",blue paintbrush,,0.7,-14.2,12.7,-0.12101,-0.03012,-77.31,-0.06496,0.13761,-71.12
+27,between,"Place the toothbrush between the remote and the pen",black remote,ref,7.4,8.2,55.9,0.10262,-0.09688,-34.08,0.16456,0.09537,-27.89
+27,between,"Place the toothbrush between the remote and the pen",black pen,ref,20.9,-9.7,-134.3,-0.07606,-0.23216,135.67,0.00153,-0.0584,141.87
+27,between,"Place the toothbrush between the remote and the pen",purple toothbrush,target,24.3,11.2,-11.4,0.13319,-0.26604,-101.43,0.21321,-0.06951,-95.23
+28,between,"Place the paintbrush between the pen and the razor",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+28,between,"Place the paintbrush between the pen and the razor",red pen,ref,7.6,16.0,-127.2,0.18032,-0.09939,142.85,0.24208,0.10125,149.04
+28,between,"Place the paintbrush between the pen and the razor",purple toothbrush,,19.9,2.5,174.2,0.04574,-0.22256,84.15,0.12158,-0.03572,90.35
+28,between,"Place the paintbrush between the pen and the razor",blue paintbrush,target,22.4,10.9,170.0,0.12999,-0.24714,79.99,0.20799,-0.05106,86.18
+28,between,"Place the paintbrush between the pen and the razor",razor,ref,13.2,-10.0,15.6,-0.07896,-0.1554,-74.43,-0.00964,0.0176,-68.24
+29,between,"Place the razor between the remote and the paintbrush",plastic bin,,29.9,-23.8,17.8,-0.21726,-0.3218,-72.22,-0.12917,-0.16276,-66.02
+29,between,"Place the razor between the remote and the paintbrush",razor,target,24.3,-7.0,88.0,-0.04943,-0.26632,-2.04,0.03168,-0.08949,4.16
+29,between,"Place the razor between the remote and the paintbrush",red pen,,14.2,-11.3,80.0,-0.09197,-0.16498,-10.05,-0.02154,0.00667,-3.85
+29,between,"Place the razor between the remote and the paintbrush",blue paintbrush,ref,-0.2,-15.5,66.0,-0.1344,-0.02122,-23.95,-0.07923,0.14501,-17.76
+29,between,"Place the razor between the remote and the paintbrush",black remote,ref,9.8,14.6,-155.0,0.1664,-0.12065,115.0,0.23053,0.07862,121.2

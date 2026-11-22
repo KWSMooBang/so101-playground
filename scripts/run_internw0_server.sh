@@ -3,7 +3,7 @@
 #   GPU=0 scripts/run_internw0_server.sh <port> <log_dir> [extra args, e.g. --save_latents_dir DIR]
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-W=$here/envs/internw0
+W=${IW_ENV:-$here/envs/internw0}  # T007: the wam-internw0 worktree holds the 35 GB env
 port=$1 log_dir=$2
 shift 2
 mkdir -p "$log_dir"
