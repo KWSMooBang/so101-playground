@@ -117,6 +117,36 @@ def training(res, es):
     return out
 
 
+def joint_sensitivity(tr):
+    """OLS of the paired differences on eps over all training pairs of all methods (pooled; each pair's
+    e_pred / success are logged whatever the method's reward). d = f(theta+delta) - f(theta-delta)
+    ~= 2*sigma*eps.grad f, so the slope / (2 sigma) estimates the gradient of f in log-k, averaged along the three
+    trajectories. Bootstrap CIs over pairs."""
+    from so101_playground.t009_es import SIGMA
+
+    rows = [p for t in tr.values() for u in t["updates"] for p in u["pairs"]]
+    out = {}
+    for key in ("e_pred", "success", "e_track_deg", "path_len_deg"):
+        X, y = [], []
+        for p in rows:
+            a, b = p["plus"].get(key), p["minus"].get(key)
+            if a is None or b is None:
+                continue
+            X.append(p["eps"])
+            y.append(float(a) - float(b))
+        X, y = np.asarray(X), np.asarray(y)
+        if len(y) < 10:
+            continue
+        coef = np.linalg.lstsq(X, y, rcond=None)[0] / (2 * SIGMA)
+        bs = []
+        for _ in range(B):
+            i = RNG.integers(0, len(y), len(y))
+            bs.append(np.linalg.lstsq(X[i], y[i], rcond=None)[0] / (2 * SIGMA))
+        bs = np.asarray(bs)
+        out[key] = {"grad": coef.tolist(), "ci": np.percentile(bs, [2.5, 97.5], axis=0).T.tolist(), "n": len(y)}
+    return out
+
+
 def hacking(tr, ev):
     """Flags: e_pred better than theta0 while success or motion is lower (eval), and training updates where the
     e_pred reward improved but the episodes moved much less or failed more."""
@@ -195,6 +225,16 @@ def report(res, es):
         lines.append(f"- {name}: |Δe_pred| {fmt_ci(d['e_pred']['mean'], d['e_pred']['ci'], '{:.4f}')} "
                      f"(n={d['e_pred']['n_pairs']}), |Δsuccess| {d['success']['mean']:.2f}, |Δe_track| "
                      f"{d['e_track_deg']['mean']:.2f}°; values {np.round(d['e_pred']['values'], 4).tolist()}")
+    sens = joint_sensitivity(tr)
+    lines.append("\n## Per-joint gradient in log-k (OLS of paired differences on ε, all training pairs pooled)")
+    lines.append("| quantity | n | " + " | ".join(ARM) + " |")
+    lines.append("|---|---|" + "---|" * len(ARM))
+    for key, s in sens.items():
+        f = "{:+.4f}" if key == "e_pred" else "{:+.2f}" if key != "path_len_deg" else "{:+.0f}"
+        cells = [f"{f.format(g)} [{f.format(c[0])}, {f.format(c[1])}]" for g, c in zip(s["grad"], s["ci"])]
+        lines.append(f"| {key} | {s['n']} | " + " | ".join(cells) + " |")
+    lines.append("Gradient toward the oracle from θ0 is +log k* = " + str(np.round(THETA_ORACLE, 2).tolist())
+                 + "; for e_pred, a joint the reward 'sees' correctly has a negative slope where k* > 1.")
     flags = hacking(tr, ev)
     lines.append("\n## Hacking flags\n" + ("\n".join(f"- {f}" for f in flags) if flags else "- none"))
     return "\n".join(lines), tr, ev, summ, jn, flags
