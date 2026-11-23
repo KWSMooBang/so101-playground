@@ -31,11 +31,19 @@ turns the torque off and quits) without editing the submodule:
   `lawam` (LaWAM), both on the bench's HTTP `/act` protocol through the runner's MolmoAct2RemotePolicy
   client, with the client settings of scripts/wam_gap_eval.py (exp/wam-* branches): LeRobot joint frame,
   overhead + wrist only (no init frames), 10 denoising steps, 16 (internw0) / 36 (lawam) actions per
-  query. `internw0` is the default policy. InternW0 keeps per-episode memory; the bench's own
-  `internw0_server.py` resets it when the request's `episode` changes, which the runner bumps at every
-  episode start. Our `internw0_probe_server.py` keys sessions by `trace.frame` instead, which this client
-  does not send, so it would restart the memory on every query: serve real runs with the bench server.
+  query. `internw0` is the default policy. InternW0 keeps per-episode memory. The server must reset it
+  only when the request's `episode` changes, which the runner bumps at every episode start. The bench's
+  `internw0_server.py` does that, and so does our `internw0_probe_server.py --real`
+  (exp/real-internw0-server). The plain probe server keys sessions by `trace.frame`, which this client does
+  not send, so it would restart the memory on every query.
   Keys 1-6 / p switch among internw0, lawam, groot, g05, pi05, molmoact2 (the LLM agents are left out).
+
+Ablation flags (src/so101_playground/ablation.py has the details; scripts/ablation.py sets them per block):
+  --joint_map naive                    LeRobot `.pos` read as the bench's, no sim alignment
+  --joint_offset_deg J=DEG[,J=DEG]     alignment zero shifted (body joints, |DEG| <= 10)
+  --overhead_rotate_deg P[,Y[,R]]      the policy's overhead image as if the camera were rotated
+  --quit_when_scored                   episode mode: dock and quit once every trial has a result
+  --blind                              print nothing that reveals the condition
 
 Policy ports (--policy_port overrides): internw0 8004, lawam 8005, groot 5555 (ZMQ), g05 8001, pi05 8002,
 molmoact2 8003 (HTTP `/act`), all on --policy_host 127.0.0.1.
@@ -43,10 +51,14 @@ molmoact2 8003 (HTTP `/act`), all on --policy_host 127.0.0.1.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import replace
 import importlib.util
 from pathlib import Path
 import sys
+
+from so101_playground.ablation import Condition, apply_joint_condition, overhead_homography, parse_offsets, \
+    parse_rotation, warp_overhead
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCH_SCRIPTS = ROOT / "third_party" / "so101_bench" / "scripts"
@@ -94,7 +106,7 @@ class _PortHandler:
         self.bus.disconnect(disable_torque=False)
 
 
-def _patch(runner) -> None:
+def _patch(runner, condition: Condition | None = None, *, quit_when_scored: bool = False, blind: bool = False) -> None:
     import cv2
     from lerobot.motors.feetech import FeetechMotorsBus
 
@@ -103,8 +115,9 @@ def _patch(runner) -> None:
     def set_gripper_min_tick(self, tick: int) -> None:
         eeprom = self.bus.read("Min_Position_Limit", "gripper", normalize=False)
         deg = self.alignment.ticks_to_sim_degrees("gripper", tick)
-        print(f"[INFO]: Gripper goals clamped at tick {tick} (sim {deg:.2f} deg) by the runner; "
-              f"EEPROM Min_Position_Limit left at {eeprom}.", flush=True)
+        if not blind:  # the floor's tick depends on the joint map
+            print(f"[INFO]: Gripper goals clamped at tick {tick} (sim {deg:.2f} deg) by the runner; "
+                  f"EEPROM Min_Position_Limit left at {eeprom}.", flush=True)
         snapshot = self.alignment.motor_calibration["gripper"]
         self.alignment.motor_calibration["gripper"] = replace(snapshot, range_min=tick)
 
@@ -126,7 +139,7 @@ def _patch(runner) -> None:
             protocol = "ZMQ" if policy == "groot" else "HTTP /act"
             raise RuntimeError(
                 f"no {policy} server ({protocol}) answering on {self.host}:{port}. Start it on the GPU server and "
-                f"forward the port: ssh -N -L {port}:localhost:{port} <gpu-server>"
+                f"forward the port: ssh -N -L {port}:<server address, e.g. its container's IP>:{port} <gpu-server>"
             )
         progress(f"{policy} server answering on {self.host}:{port}.")
 
@@ -136,14 +149,81 @@ def _patch(runner) -> None:
     runner.POLICY_DEFAULTS.update(OUR_POLICIES)  # before the parser reads its --policy choices
     runner.POLICY_ORDER = POLICY_ORDER
 
+    if condition is not None:
+        _patch_condition(runner, condition)
+    if quit_when_scored:
+        save_result = runner.Runner.save_result
+
+        def save_then_quit(self, *args, **kwargs) -> None:
+            save_result(self, *args, **kwargs)
+            done = self._results()
+            if self.episodes and all(row["trial_id"] in done for row in self.episodes):
+                print("[INFO]: Every trial has a result: docking, then quitting.", flush=True)
+                self.quit_after_dock = True
+                self.start_dock()
+                self.message = "Every trial has a result: docking, then quitting."
+
+        runner.Runner.save_result = save_then_quit
+
+
+def _patch_condition(runner, condition: Condition) -> None:
+    """Apply an ablation condition (src/so101_playground/ablation.py) to the runner's alignment and policy."""
+    load = runner.alignment_lib.RealSimAlignment.load
+
+    def load_perturbed(path):
+        alignment = load(path)
+        apply_joint_condition(alignment, condition, runner.calibration_lib.lerobot_position_to_sim_degrees)
+        return alignment
+
+    runner.alignment_lib.RealSimAlignment.load = staticmethod(load_perturbed)
+
+    if any(condition.rotate_deg):
+        homography = overhead_homography(condition.rotate_deg, *runner.FRAME_SIZE)
+        make_policy = runner.Runner._make_policy
+
+        def make_rotated(self):
+            policy = make_policy(self)
+            get_action = policy.get_action
+
+            def rotated(joint_positions, visual_obs):
+                visual_obs = {**visual_obs, "rgb_overhead": warp_overhead(visual_obs["rgb_overhead"], homography)}
+                return get_action(joint_positions, visual_obs)
+
+            policy.get_action = rotated
+            return policy
+
+        runner.Runner._make_policy = make_rotated
+
+
+def _ablation_args() -> tuple[Condition, argparse.Namespace]:
+    """Take our ablation flags out of sys.argv (the bench parser rejects unknown flags)."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--joint_map", choices=("aligned", "naive"), default="aligned")
+    parser.add_argument("--joint_offset_deg", default="")
+    parser.add_argument("--overhead_rotate_deg", default="")
+    parser.add_argument("--quit_when_scored", action="store_true")
+    parser.add_argument("--blind", action="store_true")
+    ours, rest = parser.parse_known_args(sys.argv[1:])
+    sys.argv = sys.argv[:1] + rest
+    condition = Condition(
+        "cli",
+        joint_map=ours.joint_map,
+        offsets_deg=parse_offsets(ours.joint_offset_deg),
+        rotate_deg=parse_rotation(ours.overhead_rotate_deg) if ours.overhead_rotate_deg else (0.0, 0.0, 0.0),
+    )
+    return condition, ours
+
 
 def main() -> None:
+    condition, ours = _ablation_args()
     given = {arg.split("=", 1)[0] for arg in sys.argv[1:]}
     for flag, value in DEFAULTS.items():
         if flag not in given:
             sys.argv += [flag, value]
     runner = _load_runner()
-    _patch(runner)
+    _patch(runner, condition, quit_when_scored=ours.quit_when_scored, blind=ours.blind)
+    if not ours.blind and condition.runner_args():
+        print(f"[ABLATION]: {' '.join(condition.runner_args())}", flush=True)
     runner.main()
 
 

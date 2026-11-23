@@ -8,9 +8,10 @@ real SO-101 (overhead + wrist cameras) remotely. See `RESEARCH.md` for goals and
 ```
 third_party/so101_bench   submodule, github.com/5hadytru/so101_bench @ 470e09e (main, 2026-11-04)
 third_party/lerobot       submodule, github.com/huggingface/lerobot  @ v0.7.0
-src/so101_playground/     our package (bench_units.py: our joint units <-> the bench's)
+src/so101_playground/     our package (bench_units.py: our joint units <-> the bench's; ablation.py)
 scripts/                  our scripts (isaac_smoke.py, teleop.sh, record.sh, convert_to_bench_units.py,
-                          sim_alignment.py, overhead_align.py, policy_runner.py)
+                          sim_alignment.py, overhead_align.py, policy_runner.py, ablation.py)
+tasks/                    real-arm task sets (T007 bin trials and their layouts)
 configs/real_robot/       our follower's sim alignment (bench joint frame)
 envs/isaac/               Isaac env: setup_isaac.sh, env.sh, Vulkan ICD manifest
 envs/lerobot/             LeRobot env: setup_lerobot.sh, env.sh, udev/ (stable /dev/so101_* names)
@@ -184,26 +185,30 @@ through an SSH tunnel. Besides our ports, cameras and output paths, the wrapper:
   16 / 36 actions per query.
 
 ```bash
-# GPU server (lead_so101-playground, exp/home-objects checkout; envs/internw0, envs/lawam set up there)
-CUDA_VISIBLE_DEVICES=0 WAM_CHECKPOINT_ROOT=envs/internw0/weights/checkpoints \
-    DIFFSYNTH_SKIP_DOWNLOAD=true HF_HUB_OFFLINE=1 envs/internw0/InternW0-Delta/.venv/bin/python \
-    third_party/so101_bench/scripts/internw0_server.py --repo envs/internw0/InternW0-Delta \
-    --checkpoint envs/internw0/weights/so101_bench_InternW0-Delta/model.pt \
-    --train_config envs/internw0/weights/so101_bench_InternW0-Delta/config.yaml \
-    --stats envs/internw0/weights/so101_bench_InternW0-Delta/dataset_stats.json --host 127.0.0.1 --port 8004
-GPU=0 scripts/run_lawam_server.sh 8005 outputs/real_robot/lawam_server     # LaWAM (probe server, 127.0.0.1)
-
-# home desktop
-ssh -N -L 8004:localhost:8004 -L 8005:localhost:8005 <gpu-server>
+# home desktop, once the servers answer (tunnel target: see below)
+ssh -N -L 8004:<server address>:8004 -L 8005:<server address>:8005 <gpu-host>
+curl -s localhost:8004/act                                                  # {"status": "ok", ...}
 envs/lerobot/.venv/bin/python scripts/policy_runner.py --policy internw0 --instruction "Place the pen in the plastic bin."
 envs/lerobot/.venv/bin/python scripts/policy_runner.py --no_policy        # cameras, overlay, docking only
 ```
 
-Serve InternW0 with the bench's `internw0_server.py`, not our `internw0_probe_server.py`. Both keep
-per-episode memory. The bench server resets it when the request's `episode` changes, and the runner
-changes it at every episode start. The probe server keys sessions by `trace.frame`, which the runner does
-not send, so it restarts the memory on every query. LaWAM is stateless; without a trace its probe server
-behaves like the bench's `lawam_server.py`.
+**Servers.** The GPU-server session (lead_so101-playground) runs the servers. As of 2026-11-23:
+- **InternW0** runs as `src/so101_playground/internw0_probe_server.py --real` (branch
+  exp/real-internw0-server, T008), on a 24 GB GPU.
+  - The bench's `internw0_server.py` runs out of memory there: it keeps the UMT5 text encoder on the GPU.
+  - With `--real`, the server keeps one memory per request `episode` and resets it only when that changes,
+    like the bench server. The runner changes `episode` at every episode start.
+  - The plain probe server keys sessions by `trace.frame`, which the runner does not send, so it would
+    restart the memory on every query.
+  - The `--real` server logs every query (images, state, actions, predicted latents).
+- **LaWAM** runs as `scripts/run_lawam_server.sh` (stateless; without a trace its probe server behaves like
+  the bench's `lawam_server.py`).
+
+Both servers listen on 127.0.0.1 inside a docker container, which is entered with `docker exec`. A tunnel to
+the host's `localhost` therefore gets "connect failed: Connection refused". The tunnel must target the
+container's bridge IP (`hostname -I` in the container). There the servers bind 0.0.0.0, or a TCP forwarder
+listens; on the bridge network only the host and other containers can reach it. The host alias to use is
+the plain one, not an alias that runs `docker exec` on login.
 
 In the window: d docks, i captures the init frames (unused by these two models), space starts or pauses
 the policy, q docks, turns the torque off and quits. Episodes go to `outputs/real_robot/runs/`.
@@ -215,7 +220,67 @@ Checked 2026-11-22:
 - **Client against a fake `/act` server.** internw0 queries every 16 ticks and lawam every 36. The
   payload holds the two images, `episode` and state in bench `.pos`. A held state round-trips to 0.000
   deg.
-- **Not yet run:** a real model server.
+- **Real servers.** First runs on 2026-11-23, in free mode. The episodes are unscored and are in
+  `outputs/real_robot/runs/`.
+
+### Real-arm ablation
+
+Both models were fine-tuned on the bench's sim teleop data only (`5hadytru/so101_bench_sim`; model cards),
+so real runs are zero-shot sim-to-real. `scripts/ablation.py` measures what the two pieces we set up
+contribute: the joint alignment and the overhead camera pose. Retraining-level factors are out of reach
+here: the pretrained backbones and the sim domain randomization.
+
+Conditions (`src/so101_playground/ablation.py`, applied by `scripts/policy_runner.py` flags):
+
+| condition | what changes |
+|---|---|
+| `C0` | nothing |
+| `naive` | no sim alignment: our LeRobot `.pos` read as the bench's `.pos` |
+| `off:<joint>=<deg>` | the alignment zero shifted (body joints, at most 10 deg): a mis-measured alignment |
+| `rot:<pitch>,<yaw>` | the policy's overhead image warped as if the camera were rotated. Exact for rotation (a homography); black borders. The window, drift check and videos stay raw |
+
+```bash
+# phase 0, offline
+envs/lerobot/.venv/bin/python scripts/ablation.py jointmap
+envs/lerobot/.venv/bin/python scripts/ablation.py sensitivity --policy internw0 --episodes 4   # needs the tunnel
+# phase 1, on the arm: the 6 T007 bin trials per block, one condition per block
+envs/lerobot/.venv/bin/python scripts/ablation.py plan lawam_a --policy lawam --conditions C0 naive off:shoulder_lift=5 rot:4,0 --reps 3
+envs/lerobot/.venv/bin/python scripts/ablation.py run lawam_a       # repeat until every block is scored
+envs/lerobot/.venv/bin/python scripts/ablation.py analyze lawam_a [--sim t007_phase_a.jsonl]
+```
+
+- **Tasks.** `tasks/home_objects_bin.jsonl` and `tasks/layouts/home_objects_bin_layouts.jsonl` are the 6
+  bin trials of T007's home-object set (exp/home-objects 6b104b0): black pen, black remote and blue
+  paintbrush (sim-seen), red pen, toothbrush and razor (real-only). Only bin is above 50% in sim for both
+  models: InternW0 5/6, LaWAM 6/6, against 1-6/8 on the other families.
+- **Blocks.** The order follows a cyclic Latin square over conditions, one row per rep. Blocks carry random
+  labels, and `run` passes `--blind`, so neither the terminal nor the window shows the condition.
+- **The runner in a block.** It is in episode mode: outlines show where to stage each trial, and y / f
+  score it. It docks and quits once all 6 trials are scored. Every block shares one overhead reference
+  for the drift check.
+- **analyze.** Success per condition with a Wilson 95% CI, and an exact McNemar test against `C0` on pairs
+  matched by trial and rep. It also gives a per-trial table, fail types, grasp attempts and the worst
+  tracking error.
+- **Power.** 18 pairs per condition (3 reps) detect only large drops (about 80% to 40%). Small effects
+  rest on phase 0.
+
+Phase 0 so far (`jointmap`, 23,159 logged states, naive minus aligned):
+
+| joint | mean | 95th pct of the absolute difference |
+|---|---|---|
+| shoulder_lift | +3.6 deg | 4.7 deg (about 2 cm at the gripper tip) |
+| wrist_roll | +3.8 deg | 9.5 deg |
+| gripper | +3.9 deg | |
+| pan, elbow, wrist_flex | 1.2 deg or less | |
+
+So `naive` is a real perturbation for this arm, not a rounding error.
+
+Checked without moving the arm:
+- The joint maps are exact against the LeRobot pipeline, their inverses and the offset signs.
+- The homography moves the image centre by f·tan(angle).
+- The runner builds in episode mode under each condition (torque off) and draws the T007 outlines.
+- A fake server receives the warped overhead.
+- `sensitivity` and `analyze` run end to end on fake data.
 
 ### isaac env
 
