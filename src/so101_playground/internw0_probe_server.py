@@ -36,6 +36,12 @@ Extra behaviour:
     It never touches a session: replay frames do not enter the model's memory.
   * Per-request timing and peak GPU memory go to ``<log_dir>/server_requests.jsonl``; scores to
     ``<log_dir>/iw_scores.jsonl``. ``--save_latents_dir`` stores pred/observed latents (fp16) for videos.
+  * ``--seed_per_query`` (T009): before each /act the torch / numpy / random RNGs are seeded from
+    (payload episode, trace frame), so two rollouts that send the same episode id get the same flow-matching
+    noise at the same tick (antithetic ES pairs). Off by default. **For InternW0-Δ it is a no-op**: the online
+    policy draws its flow noise from ``torch.Generator(...).manual_seed(seed)`` built on every call
+    (``src/wam/inference/online_action_policy.py``), so the noise is already identical across episodes; checked
+    2026-11-23 (identical /act output for different episode ids on the same input). Kept for other models.
 """
 
 from __future__ import annotations
@@ -225,6 +231,7 @@ class Policy:
         self.observed: OrderedDict[tuple, torch.Tensor] = OrderedDict()  # observed latents for d_obs_nom
         self.checkpoint = args.checkpoint
         self.lock = threading.Lock()
+        self.seed_per_query = bool(getattr(args, "seed_per_query", False))
         log_dir = Path(args.log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         self.req_log = (log_dir / "server_requests.jsonl").open("a")
@@ -278,6 +285,13 @@ class Policy:
             "episode": episode,
         }
         self._last_delta = None
+        if self.seed_per_query:
+            import random as _random
+
+            qseed = (int(episode or 0) * 1_000_003 + int(frame or 0)) % (2**31 - 1)
+            torch.manual_seed(qseed)
+            np.random.seed(qseed)
+            _random.seed(qseed)
         chunk = sess.get_action({"observation": observation, "instruction": str(payload["instruction"])})
         canvas = build_vertical_canvas(images["overhead"], images["wrist"], self.camera_hw)
         l0 = self._latents([canvas])[:, 0]
@@ -397,6 +411,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="Repo eval default (configs/sim_robodojo.yaml).")
     parser.add_argument("--log_dir", required=True)
     parser.add_argument("--save_latents_dir", default=None)
+    parser.add_argument("--seed_per_query", action="store_true",
+                        help="T009: seed the RNGs from (episode, frame) before every /act.")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--device", default="cuda:0")

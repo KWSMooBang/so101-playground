@@ -20,6 +20,8 @@ shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper):
   backlash  per-joint dead band of +-1.5 deg on the five arm joints: the applied target only moves
             once the command leaves a 3 deg window centred on it, then trails it by 1.5 deg.
   gain2 / latency6 / offset6   stronger doses: stiffness x0.25, 6-tick (200 ms) delay, +6 deg.
+  gainj     (T009) per-joint arm stiffness scale: Rotation 1.0, Pitch 0.35, Elbow 0.35, Wrist_Pitch 0.6,
+            Wrist_Roll 1.0 (Jaw kept, damping kept). The "unknown" gap of the RL rehearsal.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ class GapConfig:
     delay_ticks: int = 0
     offset_deg: tuple[float, ...] = (0.0,) * 6
     backlash_deg: float = 0.0
+    arm_stiffness_scales: tuple[float, ...] | None = None  # per ARM_JOINTS; overrides stiffness_scale
     description: str = ""
     extra: dict = field(default_factory=dict)
 
@@ -59,16 +62,27 @@ CONDITIONS: dict[str, GapConfig] = {
     "offset6": GapConfig(
         "offset6", offset_deg=(0.0, 6.0, 6.0, 0.0, 0.0, 0.0), description="+6 deg on Pitch and Elbow targets"
     ),
+    # T009: per-joint stiffness gap (oracle gains k* = 1/s).
+    "gainj": GapConfig("gainj", arm_stiffness_scales=(1.0, 0.35, 0.35, 0.6, 1.0),
+                       description="arm PD stiffness x(1, 0.35, 0.35, 0.6, 1) per joint"),
 }
+
+
+def arm_stiffness_scales(cfg: GapConfig) -> tuple[float, ...]:
+    """Stiffness scale of each of the five arm joints (ARM_JOINTS order)."""
+    if cfg.arm_stiffness_scales is not None:
+        return tuple(float(v) for v in cfg.arm_stiffness_scales)
+    return (float(cfg.stiffness_scale),) * len(ARM_JOINTS)
 
 
 def apply_actuator_gap(env_cfg, cfg: GapConfig) -> dict:
     """Scale the robot's arm stiffness in an (unbuilt) env cfg. Returns the stiffness actually used."""
     actuator = env_cfg.scene.robot.actuators["arm"]
     stiffness = dict(actuator.stiffness)
-    if cfg.stiffness_scale != 1.0:
-        for joint in ARM_JOINTS:
-            stiffness[joint] = float(stiffness[joint]) * cfg.stiffness_scale
+    scales = arm_stiffness_scales(cfg)
+    if any(v != 1.0 for v in scales):
+        for joint, scale in zip(ARM_JOINTS, scales):
+            stiffness[joint] = float(stiffness[joint]) * scale
         actuator.stiffness = stiffness
     return stiffness
 
