@@ -185,10 +185,11 @@ def train(args) -> None:
 
 
 # ---------------------------------------------------------------- eval
-def submit_eval(queue: Queue, tag: str, theta, jittered: bool, reps: int, t004: bool, order: str = "2") -> list[str]:
+def submit_eval(queue: Queue, tag: str, theta, jittered: bool, reps: int, t004: bool, order: str = "2",
+                rows=None) -> list[str]:
     ids = []
     for rep in range(reps):
-        for row in range(HOME_ROWS):
+        for row in (range(HOME_ROWS) if rows is None else rows):
             job_id = f"eval-{tag}-home{row}-r{rep}"
             queue.submit({"id": job_id, "order": f"{order}_{tag}_{rep}{row}", "kind": "eval", "tag": tag,
                           "set": "home", "row": row, "rep": rep, "theta": clip(theta), "noise_seed": 5000 + row,
@@ -206,7 +207,8 @@ def submit_eval(queue: Queue, tag: str, theta, jittered: bool, reps: int, t004: 
 def evaluate(args) -> None:
     theta = THETA_ORACLE if args.theta == "oracle" else [float(x) for x in args.theta.split(",")]
     ids = submit_eval(Queue(args.root), args.tag, theta, jittered=not args.no_jitter, reps=args.eval_reps,
-                      t004=args.t004, order=args.order)
+                      t004=args.t004, order=args.order,
+                      rows=None if args.rows is None else [int(r) for r in args.rows.split(",")])
     print(f"submitted {len(ids)} jobs for {args.tag} theta={np.round(clip(theta), 3).tolist()}")
 
 
@@ -226,6 +228,7 @@ def main() -> None:
     e.add_argument("--eval_reps", type=int, default=2)
     e.add_argument("--t004", action="store_true")
     e.add_argument("--order", default="2")
+    e.add_argument("--rows", default=None, help="comma-separated home rows (default all 6)")
     for p in (t, e):
         p.add_argument("--root", type=Path, required=True)
     args = ap.parse_args()
