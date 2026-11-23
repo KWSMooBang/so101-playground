@@ -98,6 +98,20 @@ def auroc(pos, neg) -> float:
     return float(((pos[:, None] > neg[None]).mean() + 0.5 * (pos[:, None] == neg[None]).mean()))
 
 
+# ---------------------------------------------------------------- chunk profile (one definition, real and sim)
+def chunk_profile(cmd16: np.ndarray, q17: np.ndarray) -> dict:
+    """cmd16[k-1] = command issued at chunk tick k (k = 1..16); q17[0] = arm state at the query (before tick 1),
+    q17[k] = state after command k has been applied for one control tick. Degrees, arm joints only.
+    real: cmd[s:s+16], state[s:s+17] (state is read at the start of a step, before that step's command);
+    sim:  cmd[i:i+16], [q[i-1]] + q[i:i+16] (q is logged after env.step), i = log index of the query step."""
+    c, q = cmd16[:, ARM], q17[:, ARM]
+    trk = np.abs(c - q[1:]).mean(1)  # per tick
+    spd = np.abs(np.diff(q, axis=0)).max(1)  # max joint speed, deg / tick
+    return {"motion16_deg": float(np.abs(q[16] - q[0]).max()), "e_track16_deg": float(trk.mean()),
+            "e_track_t1_8": float(trk[:8].mean()), "e_track_t9_16": float(trk[8:].mean()), "spd_t1": float(spd[0]),
+            "trk_k": trk.tolist(), "spd_k": spd.tolist(), "cmd_spd_k": np.abs(np.diff(np.vstack([q[:1], c]), axis=0)).max(1).tolist()}
+
+
 # ---------------------------------------------------------------- real
 def load_real(out: Path) -> tuple[list[dict], dict]:
     Q = [json.loads(l) for l in (out / "queries.jsonl").open()]
@@ -110,6 +124,14 @@ def load_real(out: Path) -> tuple[list[dict], dict]:
         qs = sorted(by[name], key=lambda r: r["q"])
         z = np.load(HOME / name / "trajectory.npz")
         st, cmd = z["state_sim_deg"], z["command_sim_deg"]
+        qsteps = np.flatnonzero(z["policy_query"])
+        for r in qs:
+            sq = int(qsteps[r["q"]])
+            assert sq == r["step"]
+            if sq + 16 < len(st):
+                r.update(chunk_profile(cmd[sq:sq + 16], st[sq:sq + 17]))
+            else:
+                r["e_track16_deg"] = None
         lab = LABELS[i]
         e = {"idx": i, "dir": name, "date": name[:8], "instruction": json.loads((HOME / name / "episode.json").read_text())["instructions"][0][1],
              "group": group_of(name, lab), "target": lab[0], "success": lab[1], "confidence": lab[2], "note": lab[3],
@@ -168,12 +190,14 @@ def load_sim() -> list[dict]:
                 npz = np.load(p, allow_pickle=True)
         for qi, f in enumerate(fr):
             d = dict(frames[f], src=src, home=home, obj=SIM_NAMES[home], ep=f"{src}:{cond}:{ep}:{att}", frame=f, qi=qi)
-            if npz is not None and f < len(npz["q"]):
+            # T007 (wam_gap_eval) logs every step from 0; T009 logs only after the hold, so index = step - hold
+            off = int(npz["hold_steps"]) if (npz is not None and src == "T009") else 0
+            i = f - off
+            if npz is not None and i + 16 <= len(npz["q"]) and (i >= 1 or "q_start" in npz):
                 q, cmd = np.degrees(npz["q"]), np.degrees(npz["cmd"])
-                n = len(q)
-                d["motion16_deg"] = float(np.abs(q[min(f + 16, n - 1), ARM] - q[f, ARM]).max())
-                d["e_track16_deg"] = float(np.abs(cmd[f:f + 16, ARM] - q[f:f + 16, ARM]).mean())
-                d["first_query"] = f == int(npz["hold_steps"]) or qi == 0
+                prev = q[i - 1] if i >= 1 else np.degrees(npz["q_start"])
+                d.update(chunk_profile(cmd[i:i + 16], np.vstack([prev[None], q[i:i + 16]])))
+                d["first_query"] = qi == 0
             rows.append(d)
     return rows
 
@@ -408,6 +432,43 @@ def main() -> None:
     reg["decomposition"] = {"total_excess": reg["real:mean_e_pred@1"] - reg["sim:mean_e_pred@1"],
                             "intercept_offset": a0 - b0, "more_tracking_error": a1 * (tr - ts), "steeper_slope": (a1 - b1) * ts}
     S["track_regression"] = reg
+    # --- stop-and-restart (L1 question): real chunks start from rest after the 0.8 s query hold; sim pauses the
+    # physics, so the arm resumes with its velocity. Per-tick profiles at matched chunk motion, and how much of the
+    # tracking-linked excess the early (ticks 1-8) part carries.
+    rs_ = {}
+    mbins = ((0, 2), (2, 10), (10, 20), (20, 40))
+    for nm, rows in (("real", rq), ("sim", sq)):
+        prof = {}
+        for lo, hi in mbins + ((10, 40),):
+            R_ = [r for r in rows if lo <= r["motion16_deg"] < hi and "trk_k" in r]
+            prof[f"{lo}-{hi}"] = {"n": len(R_), "trk_k": np.mean([r["trk_k"] for r in R_], 0).round(3).tolist(),
+                                  "spd_k": np.mean([r["spd_k"] for r in R_], 0).round(3).tolist(),
+                                  "cmd_spd_k": np.mean([r["cmd_spd_k"] for r in R_], 0).round(3).tolist(),
+                                  "e_track_t1_8": float(np.mean([r["e_track_t1_8"] for r in R_])),
+                                  "e_track_t9_16": float(np.mean([r["e_track_t9_16"] for r in R_])),
+                                  "e_track_t4_8": float(np.mean([np.mean(r["trk_k"][3:8]) for r in R_])),
+                                  "spd_t1": float(np.mean([r["spd_t1"] for r in R_])),
+                                  "spd_t4_8": float(np.mean([np.mean(r["spd_k"][3:8]) for r in R_])),
+                                  "e_pred@1": float(np.mean([r["e_pred@1"] for r in R_]))}
+        rs_[nm] = {"profile": prof, "fit_early_late": fit(rows, ["e_track_t1_8", "e_track_t9_16"])}
+    # counterfactual: give each real chunk sim's early/late tracking ratio at its motion bin (late part kept)
+    cf = []
+    ce = rs_["real"]["fit_early_late"]["coef"][1]
+    for r in rq:
+        for lo, hi in mbins:
+            if lo <= r["motion16_deg"] < hi:
+                ps = rs_["sim"]["profile"][f"{lo}-{hi}"]
+                ratio = ps["e_track_t1_8"] / ps["e_track_t9_16"]
+                cf.append(ce * max(0.0, r["e_track_t1_8"] - ratio * r["e_track_t9_16"]))
+    dec = reg["decomposition"]
+    rs_["restart_share"] = {"coef_early_real": ce, "e_pred_reduction_if_sim_early_late_ratio": float(np.mean(cf)),
+                            "of_total_excess": float(np.mean(cf) / dec["total_excess"]),
+                            "of_tracking_linked_excess": float(np.mean(cf) / (dec["more_tracking_error"] + dec["steeper_slope"]))}
+    # sim-only check: at matched motion, does starting a chunk slowly (low tick-1 speed) raise e_pred in sim?
+    sm = [r for r in sq if r["motion16_deg"] >= 10]
+    rs_["sim_entry_speed_check"] = {"n": len(sm), "fit": fit(sm, ["motion16_deg", "spd_t1"]),
+                                    "spearman_e_pred_vs_spd_t1": spearman([r["e_pred@1"] for r in sm], [r["spd_t1"] for r in sm])}
+    S["restart"] = rs_
     cm = out / "codec_motion.jsonl"
     if cm.exists():
         R = [json.loads(l) for l in cm.open()]
@@ -551,6 +612,25 @@ def plots(out: Path, eps, byq, sim, S) -> None:
                     f"sim {t['sim_query_spearman']:.2f}", fontsize=9, loc="left")
     fig.tight_layout()
     fig.savefig(out / "fig_per_query.png", dpi=150)
+    plt.close(fig)
+
+    # Fig 4: chunk tick profiles (moving chunks, 10-40 deg over the chunk): real starts from rest after the hold
+    fig, ax = plt.subplots(1, 2, figsize=(10, 3.4))
+    k = np.arange(1, 17)
+    for nm, c in (("real", C_REAL), ("sim", C_SIM)):
+        pr = S["restart"][nm]["profile"]["10-40"]
+        ax[0].plot(k, pr["spd_k"], "o-", color=c, ms=3, label=f"{nm} arm (n={pr['n']})")
+        ax[0].plot(k, pr["cmd_spd_k"], "--", color=c, lw=1, label=f"{nm} command")
+        ax[1].plot(k, pr["trk_k"], "o-", color=c, ms=3, label=nm)
+    ax[0].set_xlabel("tick in chunk (query = 0)"); ax[0].set_ylabel("max joint speed (deg / tick)")
+    ax[0].set_title("Real: tick 1 includes the 0.8 s hold (arm catches up), then stalls and re-accelerates", fontsize=8, loc="left")
+    ax[0].legend(frameon=False, fontsize=7)
+    ax[1].set_xlabel("tick in chunk"); ax[1].set_ylabel("|cmd(t) − q after t| (deg, arm mean)")
+    ax[1].set_title("Tracking error per tick (latent L1 = ticks 4–16)", fontsize=8, loc="left")
+    ax[1].axvspan(4, 16, color="k", alpha=0.04)
+    ax[1].legend(frameon=False, fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out / "fig_restart.png", dpi=150)
     plt.close(fig)
 
 
