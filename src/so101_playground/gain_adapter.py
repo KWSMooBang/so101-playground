@@ -22,7 +22,7 @@ import torch
 
 from so101_playground.control_gap import ARM_JOINTS, JOINT_NAMES
 
-K_MIN, K_MAX = 0.5, 4.0
+K_MIN, K_MAX = 0.5, 6.0  # T010 raised 4 -> 6 (oracle k* = 4); T009's coordinator clips to 4 itself
 THETA_MIN, THETA_MAX = math.log(K_MIN), math.log(K_MAX)
 
 

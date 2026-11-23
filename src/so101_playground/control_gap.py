@@ -22,6 +22,7 @@ shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper):
   gain2 / latency6 / offset6   stronger doses: stiffness x0.25, 6-tick (200 ms) delay, +6 deg.
   gainj     (T009) per-joint arm stiffness scale: Rotation 1.0, Pitch 0.35, Elbow 0.35, Wrist_Pitch 0.6,
             Wrist_Roll 1.0 (Jaw kept, damping kept). The "unknown" gap of the RL rehearsal.
+  gainlh    (T010) stiffness x0.25 on Pitch and Elbow only (gainlh20: x0.2), the planned real stage-C gap.
 """
 
 from __future__ import annotations
@@ -65,6 +66,11 @@ CONDITIONS: dict[str, GapConfig] = {
     # T009: per-joint stiffness gap (oracle gains k* = 1/s).
     "gainj": GapConfig("gainj", arm_stiffness_scales=(1.0, 0.35, 0.35, 0.6, 1.0),
                        description="arm PD stiffness x(1, 0.35, 0.35, 0.6, 1) per joint"),
+    # T010: lift + elbow only (mirrors lowering the Feetech P gain on those two joints); oracle k* = 1/s.
+    "gainlh": GapConfig("gainlh", arm_stiffness_scales=(1.0, 0.25, 0.25, 1.0, 1.0),
+                        description="arm PD stiffness x0.25 on Pitch and Elbow, others nominal"),
+    "gainlh20": GapConfig("gainlh20", arm_stiffness_scales=(1.0, 0.2, 0.2, 1.0, 1.0),
+                          description="arm PD stiffness x0.2 on Pitch and Elbow, others nominal (T010 fallback)"),
 }
 
 
