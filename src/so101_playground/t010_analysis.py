@@ -248,6 +248,7 @@ def plot(path: Path, tr, ev, summ, gap):
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.ticker  # noqa: F401
 
     t_star = theta_oracle(gap)
     fig, ax = plt.subplots(1, 5, figsize=(22, 4.2))
@@ -265,10 +266,11 @@ def plot(path: Path, tr, ev, summ, gap):
     a.set_yscale("log")
     a.set_yticks([0.5, 1, 2, 4, 6])
     a.set_yticklabels(["0.5", "1", "2", "4", "6"])
+    a.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     a.set_xlabel("training episodes")
     a.set_title("gain k (lift = elbow); band = θ̄ within 25% of log k*")
     a.legend(fontsize=8, frameon=False)
-    for i, (key, title) in enumerate((("e_pred", "e_pred@1 (per-update mean)"), ("success", "success (per-update mean)"),
+    for i, (key, title) in enumerate((("e_pred", "e_pred@1 (per-update mean of 8 ep)"), ("success", "success (per-update mean)"),
                                       ("e_track_deg", "e_track ° (per-update mean)")), start=1):
         a = ax[i]
         for m, t in tr.items():
