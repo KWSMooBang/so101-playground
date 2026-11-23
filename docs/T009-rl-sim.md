@@ -153,16 +153,17 @@ Training success (all 64 episodes): ① 0.72, ② 0.81, ③ 0.73. Training e_pre
 
 ### What e_pred sees, per joint
 
-OLS of the paired differences on ε over all 96 training pairs (all methods pooled; every pair logs e_pred and
-success whatever its reward), divided by 2σ, gives the gradient in log-k averaged along the three trajectories.
-Bootstrap CIs over pairs.
+OLS of the paired differences on the members' actual log-k difference (θ₊ − θ₋ after the [0.5, 4] clip), over
+all 96 training pairs. All methods are pooled: every pair logs e_pred and success whatever its reward. The slope
+is the gradient in log-k, averaged along the three trajectories. Bootstrap CIs over pairs. 19 of 192 training
+episodes had at least one joint on the clip.
 
 | gradient of | shoulder_pan | shoulder_lift | elbow_flex | wrist_flex | wrist_roll |
 |---|---|---|---|---|---|
-| e_pred | −0.007 [−0.021, +0.008] | **−0.028 [−0.043, −0.010]** | −0.008 [−0.022, +0.005] | +0.009 [−0.009, +0.023] | −0.000 [−0.011, +0.010] |
-| success | −0.13 [−0.42, +0.15] | −0.29 [−0.62, +0.01] | **+0.41 [+0.14, +0.67]** | −0.13 [−0.38, +0.16] | +0.14 [−0.06, +0.35] |
-| e_track ° | −0.09 [−0.18, 0.00] | **−0.36 [−0.45, −0.27]** | **−0.16 [−0.24, −0.07]** | −0.05 [−0.15, +0.04] | **−0.10 [−0.15, −0.03]** |
-| arm path ° | +57 [−131, +227] | −34 [−268, +270] | −103 [−291, +56] | +36 [−67, +143] | +48 [−103, +203] |
+| e_pred | −0.007 [−0.021, +0.009] | **−0.027 [−0.043, −0.009]** | −0.011 [−0.026, +0.004] | +0.010 [−0.009, +0.024] | −0.000 [−0.011, +0.010] |
+| success | −0.14 [−0.42, +0.13] | **−0.33 [−0.66, −0.04]** | **+0.48 [+0.19, +0.76]** | −0.14 [−0.38, +0.15] | +0.14 [−0.07, +0.35] |
+| e_track ° | −0.08 [−0.17, +0.01] | **−0.35 [−0.44, −0.25]** | **−0.19 [−0.27, −0.11]** | −0.06 [−0.15, +0.04] | **−0.09 [−0.15, −0.03]** |
+| arm path ° | +58 [−124, +225] | −37 [−264, +269] | −97 [−263, +46] | +42 [−62, +158] | +46 [−110, +204] |
 
 (Toward the oracle is +log k* = (0, 1.05, 1.05, 0.51, 0). e_pred "sees" a joint correctly if its slope is
 negative where k* > 1.)
@@ -171,7 +172,9 @@ negative where k* > 1.)
   load. Elbow points the right way, but its CI includes 0. wrist_flex (k* 1.67) has the wrong sign, and its CI
   includes 0. That matches ① and ③ pushing wrist_flex down. pan and roll are flat, as they should be (k* = 1),
   so ES lets them random-walk.
-- Per pair, the shoulder_lift signal is 2σ × 0.028 ≈ 0.011 per unit of ε. The median |paired Δe_pred| is 0.0125,
+- Success has a significant slope on two joints, with opposite signs: elbow up helps (+0.48) and shoulder_lift up
+  hurts (−0.33). That is ② moving shoulder_lift the wrong way. These slopes are mostly carried by the pen layouts.
+- Per pair, the shoulder_lift signal is 2σ × 0.027 ≈ 0.011 per unit of ε. The median |paired Δe_pred| is 0.0125,
   so the signal-to-noise per pair and joint is about 1. Five dimensions and 32 pairs are not enough to
   average that down.
 
@@ -245,6 +248,38 @@ oracle and come from pen layouts, where a stiffer arm does worse.
   λ ≈ 0.025. Better still, keep success only as a tie-breaker/guard, since a mild gain gap barely moves it.
 - **Success as an eval metric** needs many more episodes or easier objects. Pens dominate the variance. With
   12 episodes, success cannot separate even the oracle from θ0.
+
+## Review corrections (2026-11-23, codex review; logs only, no new runs)
+
+1. **Server keys shared between jobs.** Each worker reused its process attempt id for every job. The episode id
+   (`noise_seed`) is shared by the two members of a pair, by the same pair across the three methods, and by every
+   eval θ of a layout. In the logs, all 258 jobs share their (attempt, episode id) key with at least one other
+   job, and 10 of 96 training pairs ran both members on the same worker. Checked from the logs:
+   - No two jobs with the same key overlapped in time: jobs on a worker run strictly one after another, and each
+     job posts its `/iw_score` calls synchronously inside its own episode.
+   - All 8,994 server score rows of the run split into contiguous per-key runs. Each run matches one job's
+     client-side per-query e_pred list exactly, in count and value (0 mismatches).
+   - Every job's first query is frame 45. The server therefore started a fresh policy session (memory) at the
+     start of every job (its "first frame again" rule). No memory carried over between jobs.
+
+   **No score or session was mixed and no pair is excluded. Training results, learning curves and eval are
+   unchanged.** Fixed for future runs: the worker keys every job by `<attempt>.<job id>` (trace dir and
+   `/iw_score` attempt), so keys are unique per job.
+2. **Per-joint OLS ignored the k clip.** The slope on ε was divided by 2σ even where a member's θ had been
+   clipped (19/192 training episodes). It now regresses on the members' actual Δlog k. Changes:
+   - e_pred on shoulder_lift: −0.028 → −0.027, still the only significant e_pred joint;
+   - e_pred on elbow: −0.008 → −0.011, CI still includes 0;
+   - success on shoulder_lift: −0.29 [−0.62, +0.01] → −0.33 [−0.66, −0.04], now excluding 0;
+   - other changes ≤ 0.07 in success units.
+
+   The conclusions do not change. The table above is the corrected one.
+3. **Eval job ids had no θ.** A re-run with another θ could have reused an earlier eval result. Checked: every
+   eval job ran with exactly its intended θ (max |θ − final θ| = 0 for ①②③; θ0 and oracle exact), and each
+   method's eval was submitted 0–5 s after its last training episode. Fixed: eval ids now include a hash of
+   the clipped θ.
+
+The eval table, learning curves, jitter check, figure and results.tsv rows are numerically unchanged; none
+of them uses the per-joint OLS.
 
 ## Compute
 

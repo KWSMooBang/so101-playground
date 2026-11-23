@@ -16,8 +16,10 @@ run exactly as scripts/wam_gap_eval.py --model internw0 runs it (same env constr
 bench client with action horizon 16, 15 deg/tick clamp, seed 1984, 30 s limit), with the gain adapter
 (so101_playground.gain_adapter) between the clamp and the gap, where T005's oracle acts. The episode id sent
 to the policy server is ``noise_seed``: with ``--seed_per_query`` on the server the two members of an
-antithetic pair get the same flow noise at the same tick. Sessions stay separate because the server keys
-them by this process's attempt id.
+antithetic pair get the same flow noise at the same tick. Server keys (session, predictions, scores) carry
+``<attempt>.<job id>``, so no two jobs ever share a key, whichever worker runs them (review 2026-11-23 #1).
+The T009 run itself keyed by the process attempt only. The logs were checked clean (docs/T009-rl-sim.md,
+review corrections).
 
 Reward signal (real-robot computable): at s+16 of every query the observed overhead+wrist frames at s+4..s+16
 go to ``/iw_score`` (latent 1 only); e_pred@1 comes back in the response. The terminating tick is not scored
@@ -292,6 +294,8 @@ def main() -> None:
         layout = _jitter(layout, job.get("jitter"))
         adapter = GainAdapter(job["theta"], u.device)
         ep_id = int(job["noise_seed"])
+        key = f"{attempt}.{job['id']}"  # per-job server key (review #1)
+        policy.prediction_trace_dir = f"{out}#{key}"
         print(f"[T009] job {job['id']} set={job['set']} row={job['row']} seed={ep_id} {adapter.describe()}", flush=True)
         params = _reset_params(episode, layout, pool, asset_names)
         u.cfg.events.reset_benchmark_scene.params.update(params)
@@ -345,7 +349,7 @@ def main() -> None:
                     del iw_png[k]
             if step in pending and not ended:
                 for qs in pending.pop(step):
-                    res = _post("/iw_score", {"dir": str(out), "attempt": attempt, "episode": ep_id, "frame": qs,
+                    res = _post("/iw_score", {"dir": str(out), "attempt": key, "episode": ep_id, "frame": qs,
                                               "kind": "observed", "condition": job.get("tag", ""),
                                               "offsets": IW_OFFSETS1,
                                               "images_png_base64": [iw_png[qs + o] for o in IW_OFFSETS1]})
@@ -370,7 +374,7 @@ def main() -> None:
         ep = [s["e_pred"] for s in scores]
         res = dict(job)
         res.update({
-            "worker": args.worker, "attempt": attempt, "success": success, "reason": reason, "ticks": step,
+            "worker": args.worker, "attempt": attempt, "server_key": key, "success": success, "reason": reason, "ticks": step,
             "policy_ticks": len(cmd_a), "n_queries": len(queries), "n_scored": len(scores),
             "e_pred": float(np.mean(ep)) if ep else None,
             "e_pred_wrist": float(np.mean([s["wrist"] for s in scores])) if scores else None,

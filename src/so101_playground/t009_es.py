@@ -32,6 +32,7 @@ the two repeats of a row form a jittered theta-pair at equal noise seed (used fo
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -188,16 +189,20 @@ def train(args) -> None:
 def submit_eval(queue: Queue, tag: str, theta, jittered: bool, reps: int, t004: bool, order: str = "2",
                 rows=None) -> list[str]:
     ids = []
+    th = clip(theta)
+    # theta hash in the id (review #3): a re-run with a different theta never reuses an earlier eval result.
+    # The T009 run used ids without it; its eval thetas were checked equal to the final thetas (docs, review).
+    h = hashlib.sha1(json.dumps([round(t, 9) for t in th]).encode()).hexdigest()[:8]
     for rep in range(reps):
         for row in (range(HOME_ROWS) if rows is None else rows):
-            job_id = f"eval-{tag}-home{row}-r{rep}"
+            job_id = f"eval-{tag}-{h}-home{row}-r{rep}"
             queue.submit({"id": job_id, "order": f"{order}_{tag}_{rep}{row}", "kind": "eval", "tag": tag,
                           "set": "home", "row": row, "rep": rep, "theta": clip(theta), "noise_seed": 5000 + row,
                           "jitter": eval_jitter(row, rep) if jittered else None})
             ids.append(job_id)
     if t004:
         for row in range(8):
-            job_id = f"eval-{tag}-t004{row}"
+            job_id = f"eval-{tag}-{h}-t004{row}"
             queue.submit({"id": job_id, "order": f"3_{tag}_{row}", "kind": "eval", "tag": tag, "set": "t004",
                           "row": row, "rep": 0, "theta": clip(theta), "noise_seed": 6000 + row, "jitter": None})
             ids.append(job_id)

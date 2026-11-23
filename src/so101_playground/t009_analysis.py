@@ -118,30 +118,35 @@ def training(res, es):
 
 
 def joint_sensitivity(tr):
-    """OLS of the paired differences on eps over all training pairs of all methods (pooled; each pair's
-    e_pred / success are logged whatever the method's reward). d = f(theta+delta) - f(theta-delta)
-    ~= 2*sigma*eps.grad f, so the slope / (2 sigma) estimates the gradient of f in log-k, averaged along the three
-    trajectories. Bootstrap CIs over pairs."""
-    from so101_playground.t009_es import SIGMA
-
-    rows = [p for t in tr.values() for u in t["updates"] for p in u["pairs"]]
+    """OLS of the paired differences on the actual log-k difference of the two members, over all training pairs
+    of all methods (pooled; each pair's e_pred / success are logged whatever the method's reward).
+    d = f(theta_plus) - f(theta_minus) ~= (theta_plus - theta_minus).grad f, with theta_plus/minus the gains the
+    episodes really ran with, i.e. after the [log 0.5, log 4] clip (review #2: dividing eps-slopes by 2 sigma
+    ignored the clip). The slope estimates the gradient of f in log-k, averaged along the three trajectories.
+    Bootstrap CIs over pairs."""
+    pairs = []
+    for t in tr.values():
+        by = {}
+        for e in t["episodes"]:
+            by.setdefault(e["pair"], {})[e["sign"]] = e
+        pairs += [v for v in by.values() if "+" in v and "-" in v]
     out = {}
     for key in ("e_pred", "success", "e_track_deg", "path_len_deg"):
         X, y = [], []
-        for p in rows:
-            a, b = p["plus"].get(key), p["minus"].get(key)
+        for v in pairs:
+            a, b = v["+"].get(key), v["-"].get(key)
             if a is None or b is None:
                 continue
-            X.append(p["eps"])
+            X.append(np.asarray(v["+"]["theta"]) - np.asarray(v["-"]["theta"]))
             y.append(float(a) - float(b))
         X, y = np.asarray(X), np.asarray(y)
         if len(y) < 10:
             continue
-        coef = np.linalg.lstsq(X, y, rcond=None)[0] / (2 * SIGMA)
+        coef = np.linalg.lstsq(X, y, rcond=None)[0]
         bs = []
         for _ in range(B):
             i = RNG.integers(0, len(y), len(y))
-            bs.append(np.linalg.lstsq(X[i], y[i], rcond=None)[0] / (2 * SIGMA))
+            bs.append(np.linalg.lstsq(X[i], y[i], rcond=None)[0])
         bs = np.asarray(bs)
         out[key] = {"grad": coef.tolist(), "ci": np.percentile(bs, [2.5, 97.5], axis=0).T.tolist(), "n": len(y)}
     return out
@@ -226,7 +231,8 @@ def report(res, es):
                      f"(n={d['e_pred']['n_pairs']}), |Δsuccess| {d['success']['mean']:.2f}, |Δe_track| "
                      f"{d['e_track_deg']['mean']:.2f}°; values {np.round(d['e_pred']['values'], 4).tolist()}")
     sens = joint_sensitivity(tr)
-    lines.append("\n## Per-joint gradient in log-k (OLS of paired differences on ε, all training pairs pooled)")
+    lines.append("\n## Per-joint gradient in log-k (OLS of paired differences on the clipped Δlog k of the two members, "
+                 "all training pairs pooled)")
     lines.append("| quantity | n | " + " | ".join(ARM) + " |")
     lines.append("|---|---|" + "---|" * len(ARM))
     for key, s in sens.items():
