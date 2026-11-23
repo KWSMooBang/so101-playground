@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from so101_playground.t010_es import (AVG_LAST, ETA, GAPS, LAMBDA, METHODS, PAIRS_PER_UPDATE, SIGMA,
-                                      theta_oracle)
+                                      theta_hash, theta_oracle)
 
 OBJECTS = ["black pen", "black remote", "blue paintbrush", "red pen", "purple toothbrush", "razor"]
 LABEL = {"theta0": "θ0 (k=1)", "oracle": "oracle (k*)", "epred": "① −e_pred", "mixed": "③ −e_pred+λ·succ"}
@@ -87,13 +87,60 @@ def gap_of(res):
     return sorted(gaps)[-1] if gaps else "gainlh"
 
 
-def evals(res, gap):
+def eval_thetas(root: Path, gap: str) -> dict:
+    """The theta each eval tag must have been run with: 0, log k*, and each method's final theta_bar."""
+    th = {"theta0": 0.0, "oracle": theta_oracle(gap)}
+    for m in METHODS:
+        p = root / "es" / f"{m}.final.json"
+        if p.exists():
+            th[m] = json.loads(p.read_text())["theta_bar"]
+    return th
+
+
+def evals(res, gap, thetas):
+    """Eval episodes keyed by tag + gap + theta hash (review #2): a resumed run's eval at another theta_bar is
+    never mixed in. Batches with the same tag but another theta are reported and ignored."""
     out = {}
     for short, tag in EVAL_TAGS.items():
+        if short not in thetas:
+            continue
         eps = [r for r in res if r.get("kind") == "eval" and r.get("tag") == tag and r.get("gap", "gainlh") == gap]
-        if eps:
-            out[short] = sorted(eps, key=lambda e: (e["rep"], e["row"]))
+        h = theta_hash(thetas[short])
+        keep = [r for r in eps if f"-{h}-home" in r["id"]]
+        other = sorted({r["id"].split("-home")[0] for r in eps if f"-{h}-home" not in r["id"]})
+        if other:
+            print(f"[evals] {tag}: ignoring eval batches at another theta: {other}")
+        if keep:
+            out[short] = sorted(keep, key=lambda e: (e["rep"], e["row"]))
     return out
+
+
+def quadratic_min(res, gap):
+    """e_pred ~ b1 theta + b2 theta^2 + layout-row effects, over all training episodes and the 4 eval tags at this
+    gap (288 episodes in T010). argmin k with a bootstrap CI over episodes (resamples with b2 <= 0 dropped), and
+    e_pred binned by k."""
+    rows = [r for r in res if r.get("gap", "gainlh") == gap and r.get("e_pred") is not None
+            and (r.get("kind") == "train" or r.get("tag") in EVAL_TAGS.values())]
+    X = np.array([[r["theta1"], r["theta1"] ** 2] + [1.0 if r["row"] == i else 0.0 for i in range(len(OBJECTS))]
+                  for r in rows])
+    y = np.array([float(r["e_pred"]) for r in rows])
+    b = np.linalg.lstsq(X, y, rcond=None)[0]
+    rng = np.random.default_rng(0)
+    ks = []
+    for _ in range(B):
+        i = rng.integers(0, len(y), len(y))
+        bb = np.linalg.lstsq(X[i], y[i], rcond=None)[0]
+        if bb[1] > 0:
+            ks.append(math.exp(-bb[0] / (2 * bb[1])))
+    k = np.exp(X[:, 0])
+    bins = []
+    for lo, hi in ((0.5, 1.5), (1.5, 2.5), (2.5, 3.5), (3.5, 4.5), (4.5, 6.01)):
+        s_ = (k >= lo) & (k < hi)
+        bins.append((lo, hi, int(s_.sum()), float(y[s_].mean()) if s_.any() else math.nan))
+    return {"n": len(y), "b1": float(b[0]), "b2": float(b[1]),
+            "k_min": math.exp(-b[0] / (2 * b[1])) if b[1] > 0 else math.nan,
+            "k_min_ci": (float(np.percentile(ks, 2.5)), float(np.percentile(ks, 97.5))), "n_boot_valid": len(ks),
+            "bins": bins}
 
 
 def reach(es_m, t_star, frac=0.25):
@@ -137,9 +184,9 @@ def fmt(x, ci, f="{:.3f}"):
     return f"{f.format(x)} [{f.format(ci[0])}, {f.format(ci[1])}]"
 
 
-def report(res, es, gap):
+def report(res, es, gap, thetas):
     t_star = theta_oracle(gap)
-    ev = evals(res, gap)
+    ev = evals(res, gap, thetas)
     tr = training(res, es, t_star)
     L = [f"# T010 analysis (gap {gap}: stiffness x{GAPS[gap]} on lift+elbow, k* = {math.exp(t_star):.2f}, "
          f"log k* = {t_star:.3f})", ""]
@@ -212,6 +259,11 @@ def report(res, es, gap):
         resid = d_e - t["slope_epred_logk"] * dth
         L.append(f"- {LABEL[m]} per-pair SNR: |slope|·2σ = {abs(t['slope_epred_logk']) * 2 * SIGMA:.4f} vs residual sd "
                  f"{np.std(resid):.4f} -> {abs(t['slope_epred_logk']) * 2 * SIGMA / max(np.std(resid), 1e-9):.2f}")
+    q = quadratic_min(res, gap)
+    L += ["", f"## e_pred vs θ (pooled quadratic + layout-row effects, n = {q['n']})", "",
+          f"b1 = {q['b1']:+.4f}, b2 = {q['b2']:+.4f}; argmin k = {q['k_min']:.2f} "
+          f"[{q['k_min_ci'][0]:.1f}, {q['k_min_ci'][1]:.1f}] (bootstrap, {q['n_boot_valid']}/{B} resamples convex)", ""]
+    L += [f"- k in [{lo}, {hi}): n = {n}, e_pred = {e:.4f}" for lo, hi, n, e in q["bins"]]
     return "\n".join(L) + "\n", tr, ev, summ
 
 
@@ -314,7 +366,7 @@ def main():
     args = ap.parse_args()
     res, es = load(args.root)
     gap = gap_of(res)
-    md, tr, ev, summ = report(res, es, gap)
+    md, tr, ev, summ = report(res, es, gap, eval_thetas(args.root, gap))
     print(md)
     (args.root / "analysis.md").write_text(md)
     (args.root / "summary.json").write_text(json.dumps(

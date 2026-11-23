@@ -141,7 +141,7 @@ The per-pair SNR is still ≈ 1, as in T009. The fix was reducing the problem to
 4 pairs per update, not a cleaner signal.
 
 **① settles above k* (4.88 vs 4), and that is where e_pred puts its minimum.** I fitted e_pred against θ over all
-288 episodes: a quadratic with one effect per layout row. Its minimum is at k ≈ 5.6 [4.3, 11] (bootstrap).
+288 episodes: a quadratic with one effect per layout row. Its minimum is at k ≈ 5.6 [4.3, 11.3] (bootstrap; `t010_analysis.quadratic_min`, printed in `analysis.md`).
 
 Binned e_pred:
 
@@ -242,3 +242,23 @@ $PY -m so101_playground.t010_analysis --root $R --plot ../docs/T010_rl_sim_a2.pn
 The coordinators are restartable. They rebuild θ from `queue/done/` and never resubmit a pending, running or done
 job. The results.tsv CIs are a separate bootstrap draw from `analysis.md` and can differ in the third decimal. The
 doc quotes `analysis.md`.
+
+## Review corrections (2026-11-24, codex review; no new runs)
+
+1. **The quadratic e_pred-vs-θ fit was not in the branch.** It is now `t010_analysis.quadratic_min`:
+   - model: e_pred ~ b1·θ + b2·θ² + layout-row effects, over all 288 episodes;
+   - bootstrap over episodes, seed 0, 2000 resamples (all convex);
+   - output goes to `analysis.md`.
+
+   It reproduces the reported minimum k = 5.56 and the binned e_pred values exactly. The bootstrap upper bound is
+   11.3 instead of the 11.0 first reported, from a different episode order in the ad-hoc script.
+2. **Eval grouping ignored θ.** Eval episodes were grouped by tag and gap only. They are now grouped by tag + gap
+   + the θ hash in the job id:
+   - θ0 → 0;
+   - oracle → log k*;
+   - each method → θ̄ from `es/<method>.final.json`.
+
+   Batches at another θ are printed and ignored. Checked on this run: exactly one eval batch per tag (θ0
+   `38f6d787`, oracle `957da7f4`, ① `a6e4daa3`, ③ `d2ff1a12`, 12 episodes each).
+
+**No eval, training or results.tsv number changes.** The `analysis.md` diff is only the added quadratic section.

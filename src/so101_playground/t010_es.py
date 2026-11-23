@@ -101,6 +101,11 @@ def reward(method: str, res: dict) -> float | None:
     raise ValueError(method)
 
 
+def theta_hash(t: float) -> str:
+    """Short hash of the clipped theta, part of every eval job id (an eval batch is keyed by tag + theta)."""
+    return hashlib.sha1(json.dumps(round(clip(t), 9)).encode()).hexdigest()[:8]
+
+
 def theta_bar(iterates: list[float]) -> float:
     return float(np.mean(iterates[-AVG_LAST:]))
 
@@ -168,7 +173,7 @@ def train(args) -> None:
 # ---------------------------------------------------------------- eval
 def submit_eval(queue: Queue, tag: str, t: float, gap: str, order: str = "2", reps: int = 2) -> list[str]:
     th = clip(t)
-    h = hashlib.sha1(json.dumps(round(th, 9)).encode()).hexdigest()[:8]
+    h = theta_hash(th)
     ids = []
     for rep in range(reps):
         for row in range(HOME_ROWS):
