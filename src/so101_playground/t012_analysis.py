@@ -4,8 +4,11 @@
     python -m so101_playground.t012_analysis --root R --sheet docs/T012_contact_sheet.png   # smoke contact sheet
 
 Reads <root>/queue/done/*.json (kind stageA). Every condition ran the same (row, rep) episodes as d0 (same jitter,
-same episode id), so deltas vs d0 are paired by (row, rep). CIs: 95% percentile bootstrap over the paired
-episodes (2000 resamples, seed 0); success also gets a Wilson interval.
+same episode id), so deltas vs d0 are paired by (row, rep). CIs: 95% percentile bootstrap (2000 resamples,
+seed 0). Per-condition means and paired deltas resample the condition's episodes. Correlations and AUROCs pool
+conditions that share each (row, rep) episode and its d0 partner, so they resample whole (row, rep) blocks
+(``block_boot``). Each correlation/AUROC uses the complete cases of its own metric (missing scores are never imputed);
+cohort sizes and failure counts are reported. Success also gets a Wilson interval.
 
 Quantities per episode:
   e_pred, e_pred2          rollout mean e_pred@1 / @2 (InternW0 future-delta error, VAE latent MSE)
@@ -201,64 +204,130 @@ def summarize(by: dict[str, list[dict]]) -> dict:
     return out
 
 
+def block_boot(items: list[dict], stat, seed: int = 0):
+    """Point estimate and 95% CI of stat(items), resampling whole (row, rep) blocks with replacement.
+
+    Every condition ran the same 12 (row, rep) episodes, and paired deltas share that block's d0 episode, so the
+    block (not the episode or the delta) is the independent unit. All items of a drawn block enter together."""
+    blocks: dict = {}
+    for it in items:
+        blocks.setdefault(it["block"], []).append(it)
+    keys = sorted(blocks)
+    est = stat(items)
+    if not keys:
+        return est, float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    bs = []
+    for _ in range(B):
+        pick = rng.integers(0, len(keys), len(keys))
+        v = stat([it for i in pick for it in blocks[keys[i]]])
+        if v is not None and np.isfinite(v):
+            bs.append(v)
+    if not bs:
+        return est, float("nan"), float("nan")
+    return est, float(np.percentile(bs, 2.5)), float(np.percentile(bs, 97.5))
+
+
+def _sp(xk: str, yk: str, resid: bool = False):
+    def f(items):
+        if len(items) < 3:
+            return float("nan")
+        x = np.array([it[xk] for it in items], float)
+        y = np.array([it[yk] for it in items], float)
+        if resid:
+            g = [[it["cond"] for it in items], [it["row"] for it in items]]
+            x, y = residualize(x, g), residualize(y, g)
+        return spearman(x, y)
+    return f
+
+
+def _au(xk: str, resid: bool = False):
+    def f(items):
+        x = np.array([it[xk] for it in items], float)
+        if resid:
+            x = residualize(x, [[it["cond"] for it in items], [it["row"] for it in items]])
+        return auroc(x, [it["fail"] for it in items])
+    return f
+
+
+def _item(r: dict, **vals) -> dict | None:
+    """One analysis item, or None if any value is missing (complete cases only, never imputed)."""
+    if any(v is None for v in vals.values()):
+        return None
+    return {"block": (r["row"], r["rep"]), "cond": r["cond"], "row": r["row"], "fail": 0 if r["success"] else 1,
+            **{k: float(v) for k, v in vals.items()}}
+
+
 def correlations(by: dict[str, list[dict]]) -> dict:
+    """Spearman / AUROC with (row, rep)-block bootstrap CIs; each metric on its own complete-case cohort."""
     rs = [r for v in by.values() for r in v]
-    res = {}
-    have = [r for r in rs if r.get("reach_err_cm") is not None and r.get("e_pred") is not None]
-    e = np.array([r["e_pred"] for r in have])
-    m = np.array([motion(r) if motion(r) is not None else np.nan for r in have])
-    st = np.array([r.get("e_pred_static") if r.get("e_pred_static") is not None else np.nan for r in have])
-    re_ = np.array([r["reach_err_cm"] for r in have])
-    cond = np.array([r["cond"] for r in have])
-    row = np.array([r["row"] for r in have])
-    res["n"] = len(have)
-    res["pooled_e_pred"] = boot_spearman(e, re_)
+    res = {"cohorts": {}}
+
+    def cohort(name, items):
+        items = [it for it in items if it is not None]
+        res["cohorts"][name] = {"n": len(items), "n_fail": int(sum(it["fail"] for it in items)),
+                                "blocks": len({it["block"] for it in items})}
+        return items
+
+    # e_pred (and its parts) vs reach error, per episode
+    ep = cohort("e_pred~reach", [_item(r, x=r.get("e_pred"), y=r.get("reach_err_cm")) for r in rs])
+    mo = cohort("motion~reach", [_item(r, x=motion(r), y=r.get("reach_err_cm")) for r in rs])
+    st = cohort("static~reach", [_item(r, x=r.get("e_pred_static"), y=r.get("reach_err_cm")) for r in rs])
+    res["n"] = len(ep)
+    res["pooled_e_pred"] = block_boot(ep, _sp("x", "y"))
     # within condition and layout: remove condition and row means from both (the object/view confounds)
-    res["within_e_pred"] = boot_spearman(residualize(e, [cond, row]), residualize(re_, [cond, row]))
-    ok = np.isfinite(m)
-    res["within_motion"] = boot_spearman(residualize(m[ok], [cond[ok], row[ok]]), residualize(re_[ok], [cond[ok], row[ok]]))
-    res["within_static"] = boot_spearman(residualize(st[ok], [cond[ok], row[ok]]), residualize(re_[ok], [cond[ok], row[ok]]))
-    # across conditions: paired deltas vs d0 (same row, rep): does a view that raises e_pred also raise reach error?
-    base = by.get("d0", [])
-    de, dr, dm, ds = [], [], [], []
-    bmap = {(r["row"], r["rep"]): r for r in base}
+    res["within_e_pred"] = block_boot(ep, _sp("x", "y", resid=True))
+    res["within_motion"] = block_boot(mo, _sp("x", "y", resid=True))
+    res["within_static"] = block_boot(st, _sp("x", "y", resid=True))
+    # paired deltas vs d0 (same row, rep): does a view that raises e_pred also raise reach error?
+    bmap = {(r["row"], r["rep"]): r for r in by.get("d0", [])}
+
+    def dlt(r, o, f):
+        a, b = f(r), f(o)
+        return None if a is None or b is None else a - b
+
+    pd = {"e_pred": [], "motion": [], "static": []}
+    fns = {"e_pred": g("e_pred"), "motion": motion, "static": g("e_pred_static")}
     for c, v in by.items():
         if c == "d0":
             continue
         for r in v:
             o = bmap.get((r["row"], r["rep"]))
-            if o is None or None in (r.get("reach_err_cm"), o.get("reach_err_cm"), r.get("e_pred"), o.get("e_pred")):
+            if o is None:
                 continue
-            de.append(r["e_pred"] - o["e_pred"])
-            dr.append(r["reach_err_cm"] - o["reach_err_cm"])
-            dm.append((motion(r) or 0) - (motion(o) or 0))
-            ds.append((r.get("e_pred_static") or 0) - (o.get("e_pred_static") or 0))
-    res["paired_delta_e_pred"] = boot_spearman(de, dr) if len(de) > 3 else None
-    res["paired_delta_motion"] = boot_spearman(dm, dr) if len(dm) > 3 else None
-    res["paired_delta_static"] = boot_spearman(ds, dr) if len(ds) > 3 else None
-    res["n_paired"] = len(de)
-    # condition means
-    cm = [(np.mean([r["e_pred"] for r in v if r.get("e_pred") is not None]),
-           np.mean([r["reach_err_cm"] for r in v if r.get("reach_err_cm") is not None]),
-           np.mean([r["e_pred_static"] for r in v if r.get("e_pred_static") is not None]))
-          for v in by.values()]
+            dr = dlt(r, o, g("reach_err_cm"))
+            for k, f in fns.items():
+                pd[k].append(_item(r, x=dlt(r, o, f), y=dr))
+    for k in pd:
+        items = cohort(f"paired Δ{k}~Δreach", pd[k])
+        res[f"paired_delta_{k}"] = block_boot(items, _sp("x", "y")) if len(items) > 3 else None
+    res["n_paired"] = res["cohorts"]["paired Δe_pred~Δreach"]["n"]
+
+    # condition means (each mean over the episodes that have the value)
+    def cmean(v, f):
+        x = [f(r) for r in v if f(r) is not None]
+        return float(np.mean(x)) if x else float("nan")
+
+    cm = [(cmean(v, g("e_pred")), cmean(v, g("reach_err_cm")), cmean(v, g("e_pred_static"))) for v in by.values()]
     res["cond_means_e_pred_vs_reach"] = spearman([a for a, _, _ in cm], [b for _, b, _ in cm])
     res["cond_means_static_vs_reach"] = spearman([c for _, _, c in cm], [b for _, b, _ in cm])
-    # failure AUROC (pooled over all conditions): e_pred, static floor, motion part, reach error
-    all_ = [r for r in rs if r.get("e_pred") is not None]
-    y = [0 if r["success"] else 1 for r in all_]
-    res["auroc"] = {
-        "e_pred": boot_auroc([r["e_pred"] for r in all_], y),
-        "e_pred2": boot_auroc([r.get("e_pred2") if r.get("e_pred2") is not None else np.nan for r in all_], y)
-        if all(r.get("e_pred2") is not None for r in all_) else None,
-        "e_pred_static": boot_auroc([r.get("e_pred_static") or 0 for r in all_], y),
-        "motion": boot_auroc([motion(r) or 0 for r in all_], y),
-        "reach_err (no close = inf)": boot_auroc([r["reach_err_cm"] if r.get("reach_err_cm") is not None else 1e9
-                                                  for r in all_], y),
-        "e_pred within row+cond": boot_auroc(residualize([r["e_pred"] for r in all_],
-                                                         [[r["cond"] for r in all_], [r["row"] for r in all_]]), y),
+
+    # failure AUROC, pooled over conditions; each score on the episodes that have it (no imputation)
+    no_close = 1e9  # a missing close event is the worst reach, by definition (not a missing score)
+    scores = {
+        "e_pred": (g("e_pred"), False),
+        "e_pred2": (g("e_pred2"), False),
+        "e_pred_static": (g("e_pred_static"), False),
+        "motion": (motion, False),
+        "reach_err (no close = inf)": (lambda r: r["reach_err_cm"] if r.get("reach_err_cm") is not None else no_close,
+                                       False),
+        "e_pred within row+cond": (g("e_pred"), True),
     }
-    res["n_fail"] = int(sum(y))
+    res["auroc"] = {}
+    for name, (f, resid) in scores.items():
+        items = cohort(f"AUROC {name}", [_item(r, x=f(r)) for r in rs])
+        res["auroc"][name] = block_boot(items, _au("x", resid)) if items else None
+    res["n_fail"] = int(sum(0 if r["success"] else 1 for r in rs))
     return res
 
 
@@ -325,9 +394,13 @@ def report(by, summ, corr) -> str:
           f"Δmotion~Δreach {fmt(corr['paired_delta_motion'], 3)}, Δstatic~Δreach {fmt(corr['paired_delta_static'], 3)}",
           f"- condition means (n={len(summ)}): e_pred~reach {corr['cond_means_e_pred_vs_reach']:.3f}, "
           f"static~reach {corr['cond_means_static_vs_reach']:.3f}",
-          "", f"## Failure AUROC (pooled, {corr['n_fail']} failures)", ""]
+          "", f"## Failure AUROC (pooled; {corr['n_fail']} failures in all episodes; each score on its own cohort)", ""]
     for k, v in corr["auroc"].items():
-        L.append(f"- {k}: {fmt(v, 3) if v else '—'}")
+        c = corr["cohorts"][f"AUROC {k}"]
+        L.append(f"- {k}: {fmt(v, 3) if v else '—'} (n={c['n']}, failures {c['n_fail']})")
+    L += ["", "## Cohorts (complete cases per metric; CIs resample whole (row, rep) blocks, 2000x)", "",
+          "| metric | n | failures | (row, rep) blocks |", "|---|---|---|---|"]
+    L += [f"| {k} | {c['n']} | {c['n_fail']} | {c['blocks']} |" for k, c in corr["cohorts"].items()]
     gt = gate(summ)
     L += ["", "## Stage B gate (Δ* = smallest |Δ| with success ≤ 7/12)", ""]
     for ax, c in gt.items():

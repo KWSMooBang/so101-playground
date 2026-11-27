@@ -286,3 +286,50 @@ def test_probe_session_isolation_on_server():
     # predictions are keyed apart too: a probe score can only find probe predictions
     assert (pdir, ep, 45) in pol.queries and (rdir, ep, 45) in pol.queries
     assert pol.queries[(pdir, ep, 45)] is not pol.queries[(rdir, ep, 45)]
+
+
+# ---------------------------------------------------------------- analysis (review 2026-11-28)
+def _ep(cond, row, rep, success=True, **kw):
+    r = {"cond": cond, "row": row, "rep": rep, "success": success, "reason": "success" if success else "time_out",
+         "target": "razor", "e_pred": 0.1, "e_pred2": 0.2, "e_pred_static": 0.3, "reach_err_cm": 1.0}
+    r.update(kw)
+    return r
+
+
+def test_block_boot_resamples_whole_blocks():
+    from so101_playground import t012_analysis as A
+
+    items = [{"block": (b, 0), "v": float(b)} for b in range(4) for _ in range(3)]
+    seen = []
+
+    def stat(xs):
+        seen.append(xs)
+        return float(np.mean([x["v"] for x in xs]))
+
+    A.block_boot(items, stat)
+    for xs in seen[1:50]:
+        counts = {}
+        for x in xs:
+            counts[x["block"]] = counts.get(x["block"], 0) + 1
+        assert all(c % 3 == 0 for c in counts.values())  # a drawn block always brings all 3 of its items
+
+
+def test_missing_scores_are_not_imputed():
+    from so101_playground import t012_analysis as A
+
+    rng = np.random.default_rng(1)
+    by = {}
+    for cond in ("d0", "tilt+4"):
+        by[cond] = [_ep(cond, row, rep, success=bool(rng.random() > 0.3), e_pred=float(rng.random()),
+                        e_pred_static=float(rng.random()), reach_err_cm=float(rng.random()))
+                    for row in range(6) for rep in range(2)]
+    by["tilt+4"][0]["e_pred_static"] = None  # missing probe score
+    by["tilt+4"][1]["e_pred2"] = None  # one missing @2 must not drop the whole @2 AUROC
+    by["tilt+4"][2]["reach_err_cm"] = None  # no close
+    c = A.correlations(by)
+    co = c["cohorts"]
+    assert co["AUROC e_pred_static"]["n"] == 23 and co["AUROC motion"]["n"] == 23
+    assert co["AUROC e_pred2"]["n"] == 23 and c["auroc"]["e_pred2"] is not None
+    assert co["AUROC e_pred"]["n"] == 24 and co["AUROC reach_err (no close = inf)"]["n"] == 24
+    assert co["static~reach"]["n"] == 22  # minus the missing static and the missing reach
+    assert co["paired Δstatic~Δreach"]["n"] == 10 and co["paired Δe_pred~Δreach"]["n"] == 11

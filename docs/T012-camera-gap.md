@@ -24,7 +24,11 @@ The overhead camera is mis-posed, so the policy and the world model both see a s
 - Does e_pred track the task-relevant error (reach error), or only the off-distribution view?
 
 The motivation was home data (InternW0, 6 home bin layouts). An 8° overhead-image warp cut real closed-loop success
-to 2/6, and open-loop actions reacted to the view but saturated beyond ~4°.
+from 4/6 to 2/6, and open-loop actions reacted to the view but saturated beyond ~4°. **That home perturbation was not
+a camera move.** It was a homography warp of the recorded overhead image (an 8° pitch), which leaves black,
+out-of-frame borders where the warped image no longer covers the canvas. Here in sim the camera pose itself changes
+and the renderer fills the whole frame, so there are no black borders: the view shifts, but the frame stays fully
+populated with real scene content.
 
 ## Design
 
@@ -161,11 +165,15 @@ overhead-half Δs (rollout vs probe) as the static/motion split:**
 
 | test | Spearman ρ [95% CI] |
 |---|---|
-| pooled, all conditions and objects (105 episodes with a close) | 0.49 [0.35, 0.60] |
-| **within condition and layout** (both residualized on cond + row) | **−0.01 [−0.21, 0.20]** |
-| same, motion part / static floor | −0.05 [−0.25, 0.15] / 0.04 [−0.16, 0.25] |
-| **paired deltas vs d0** (Δe_pred vs Δreach, n = 90) | **−0.03 [−0.24, 0.18]** |
-| same, Δmotion / Δstatic | 0.09 [−0.11, 0.30] / −0.09 [−0.29, 0.11] |
+| pooled, all conditions and objects (105 episodes with a close; 7 failures) | 0.49 [0.16, 0.57] |
+| **within condition and layout** (both residualized on cond + row) | **−0.01 [−0.34, 0.36]** |
+| same, motion part / static floor | −0.05 [−0.21, 0.17] / 0.04 [−0.29, 0.32] |
+| **paired deltas vs d0** (Δe_pred vs Δreach, n = 90 in 10 blocks) | **−0.03 [−0.24, 0.16]** |
+| same, Δmotion / Δstatic | 0.09 [−0.21, 0.30] / −0.09 [−0.32, 0.23] |
+
+The CIs resample whole (row, rep) blocks: 12 blocks, or 10 for the paired deltas, where both black-pen d0 episodes
+never close. Every condition reuses the same 12 episodes, and every paired delta shares its block's d0 episode, so the
+block is the independent unit (review correction 1).
 
 - The pooled 0.49 is an object effect: the remote and the red pen have both larger reach error (1–2 cm) and larger
   e_pred.
@@ -178,28 +186,37 @@ overhead-half Δs (rollout vs probe) as the static/motion split:**
 
 ### Failure AUROC (pooled, 22 failures in 120 episodes)
 
+Each score uses the episodes that have it (no imputation). In this run, all 120 episodes have every score, so every
+cohort is n = 120 with 22 failures. The CIs resample (row, rep) blocks.
+
 | score | AUROC |
 |---|---|
-| e_pred@1 | 0.97 [0.93, 1.00] |
-| e_pred@2 | 0.98 [0.96, 1.00] |
-| e_pred@1 within row + cond | 0.86 [0.74, 0.94] |
-| motion part | 0.76 [0.59, 0.90] |
-| e_pred_static (probe) | 0.62 [0.51, 0.74] |
-| reach error (no close = ∞) | 0.88 [0.79, 0.96] |
+| e_pred@1 | 0.97 [0.87, 1.00] |
+| e_pred@2 | 0.98 [0.93, 1.00] |
+| e_pred@1 within row + cond | 0.86 [0.67, 0.97] |
+| motion part | 0.76 [0.23, 0.99] |
+| e_pred_static (probe) | 0.62 [0.42, 0.89] |
+| reach error (no close = ∞) | 0.88 [0.56, 1.00] |
 
 The failures are pen timeouts, not camera effects. The black-pen failures (15) never close: the policy dithers above
 the pen for 30 s, with e_pred 0.203 against 0.127 for its 5 successes. That dithering is what e_pred detects. The
-pre-rollout static probe barely separates outcomes (0.62).
+pre-rollout static probe does not separate outcomes: 0.62, CI includes 0.5.
 
 ## Read
 
 - **Success:** an overhead mis-pose of up to 8° on tilt and pan, and 12° on tilt, does not reduce sim success.
   Non-pens stay 8/8 and pen outcomes fluctuate as at d0. **No Δ* exists, so stage B has no gap to learn against in
-  sim.** The real home result (8° warp → 2/6) is not reproduced by a pure pose change in sim. Possible reasons, not
-  separated here:
-  - the sim scene and background are more redundant;
-  - the home warp also moved the table edges/bin in ways a rigid pose change does not;
-  - the real robot's other gaps compound.
+  sim.** The real home result (8° warp, 4/6 → 2/6) is not reproduced by a pure pose change in sim. Candidate causes,
+  not separated here:
+  - **The perturbation differs.** At home it was a homography warp of the image, with black out-of-frame borders that
+    are far off the training distribution. Here the camera moved and the frame stayed fully rendered, with no
+    borders. The warp also distorts the table/bin geometry in a way a rigid pose change does not.
+  - The sim scene and background may be more redundant than the real one.
+  - The real robot's other gaps compound.
+  - Real n = 6 single trials (4/6 vs 2/6) is itself within noise.
+
+  A direct test is to apply the same homography warp, black borders included, to the sim overhead frames: CPU-side
+  on the policy input, no new knob.
 - **e_pred sees the view, not a perception error:**
   - The overhead half rises by a near-constant +0.02–0.03 at every non-zero Δ, a step, not a dose.
   - Part of the rise is present with the arm docked (static floor). The rest appears only with motion.
@@ -240,5 +257,34 @@ $PY -m so101_playground.t012_coord sweep --root $R --conds tilt+12  # gate follo
 # when done: touch $R/queue/STOP; stop the server
 $PY -m so101_playground.t012_analysis --root $R --sheet ../docs/T012_contact_sheet.png
 $PY -m so101_playground.t012_analysis --root $R --plot ../docs/T012_camera_gap.png --tsv /outputs/so101-playground/results.tsv
-PYTHONPATH=. $PY -m pytest ../tests/test_t012.py -q                 # CPU checks (14 pass, 1 skip)
+PYTHONPATH=. $PY -m pytest ../tests/test_t012.py -q                 # CPU checks (16 pass, 1 skip)
 ```
+
+## Review corrections (2026-11-28, codex review; analysis only, no new runs)
+
+1. **Correlation and AUROC CIs now resample whole (row, rep) blocks.** All 10 conditions ran the same 12 (row, rep)
+   episodes, and every paired delta shares its block's d0 episode. The earlier version resampled episodes or deltas
+   independently, which treated them as independent and gave CIs that were too narrow.
+   - The fix is `t012_analysis.block_boot`.
+   - Point estimates are unchanged; CIs are wider. Pooled ρ: [0.35, 0.60] → [0.16, 0.57]. Within condition+layout:
+     [−0.21, 0.20] → [−0.34, 0.36]. Paired Δ: [−0.24, 0.18] → [−0.24, 0.16]. AUROC e_pred: [0.93, 1.00] → [0.87, 1.00].
+     Static probe: [0.51, 0.74] → [0.42, 0.89], now including 0.5.
+   - Per-condition paired Δs (the main table) were already correct: within one condition each (row, rep) contributes
+     one delta.
+2. **Each AUROC now uses its own complete-case cohort,** and n and the failure count are reported (`analysis.md`,
+   Cohorts). Before, every score was restricted to episodes with a rollout e_pred@1. The scorer drops the terminal
+   window, so an episode that ends early would also have dropped out of the static and reach AUROCs, and a single
+   missing e_pred@2 removed the whole @2 AUROC.
+3. **Missing probe scores are no longer imputed as 0.** Before, they entered the static/motion correlations and
+   AUROCs as 0; now only complete pairs and present scores are used.
+
+   In this run, no episode lacks e_pred@1, e_pred@2 or a probe score, so corrections 2 and 3 change no number here.
+   They are covered by `tests/test_t012.py::test_missing_scores_are_not_imputed`.
+4. **Doc:** the home 8° result was an image homography warp with black borders, not a camera move. This is listed as
+   the first candidate for the sim/home difference (Read).
+
+**Conclusions unchanged:**
+- within-condition and paired e_pred~reach correlations are ≈ 0, with CIs including 0;
+- the pooled ρ is positive, an object effect;
+- e_pred's failure AUROC stays high (0.97 [0.87, 1.00]), driven by pen dithering;
+- the static probe does not separate failures.
