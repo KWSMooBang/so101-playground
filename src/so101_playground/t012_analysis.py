@@ -348,23 +348,23 @@ def plot(by, summ, corr, path: Path):
         x = [axis_of(c)[1] for c in cs]
         sc = [summ[c]["success"] / summ[c]["n"] for c in cs]
         ax[0].plot(x, sc, "o-", color=col[a], label=a)
-        for k, ls, lab in (("e_pred", "-", "rollout"), ("e_pred_static", "--", "static floor")):
-            y = [summ[c][k][0] for c in cs]
-            lo = [summ[c][k][1] for c in cs]
-            hi = [summ[c][k][2] for c in cs]
-            ax[1].errorbar(x, y, yerr=[np.subtract(y, lo), np.subtract(hi, y)], fmt="o" + ls, color=col[a],
-                           capsize=2, label=f"{a} {lab}", alpha=1 if ls == "-" else 0.6)
-        y = [summ[c]["motion"][0] for c in cs]
-        ax[2].plot(x, y, "o-", color=col[a], label=f"{a} motion (rollout − static)")
-        y = [summ[c]["reach_err_cm"][0] for c in cs]
-        ax[2].plot([], [])
+        for k, ls, lab, axi in (("e_pred_overhead", "-", "rollout, overhead half", 1),
+                                ("e_pred_static_overhead", "--", "static probe, overhead half", 1),
+                                ("e_pred", "-", "rollout, all", 2), ("motion", ":", "motion (rollout − static)", 2)):
+            y = [0.0 if c == "d0" else summ[c]["d_" + k][0] for c in cs]
+            lo = [0.0 if c == "d0" else summ[c]["d_" + k][1] for c in cs]
+            hi = [0.0 if c == "d0" else summ[c]["d_" + k][2] for c in cs]
+            ax[axi].errorbar(x, y, yerr=[np.subtract(y, lo), np.subtract(hi, y)], fmt="o" + ls, color=col[a],
+                             capsize=2, label=f"{a} {lab}", alpha=1 if ls == "-" else 0.6)
         ax2 = ax[2]
     ax[0].axhline(7 / 12, color="gray", ls=":", lw=1)
     ax[0].set(xlabel="Δ (deg)", ylabel="success", title="success (12 ep / cond); dotted = gate 7/12", ylim=(0, 1.05))
     ax[0].legend()
-    ax[1].set(xlabel="Δ (deg)", ylabel="e_pred@1", title="e_pred@1: rollout vs static floor")
+    for i in (1, 2):
+        ax[i].axhline(0, color="gray", lw=0.8)
+    ax[1].set(xlabel="Δ (deg)", ylabel="paired Δ vs d0", title="overhead-half e_pred@1: rollout and static probe")
     ax[1].legend(fontsize=7)
-    ax2.set(xlabel="Δ (deg)", ylabel="e_pred − e_pred_static", title="motion part of e_pred")
+    ax2.set(xlabel="Δ (deg)", ylabel="paired Δ vs d0", title="e_pred@1 (both halves) and its motion part")
     ax2.legend(fontsize=7)
     rs = [r for v in by.values() for r in v if r.get("reach_err_cm") is not None and r.get("e_pred") is not None]
     for r in rs:
